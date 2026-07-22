@@ -1,64 +1,89 @@
-# VPN Telegram Bot: этап 1
+# VPN Telegram Bot — этап 3
 
-Минимальный запускаемый каркас Telegram-бота на aiogram 3 с PostgreSQL,
-Redis, SQLAlchemy 2 и Alembic. Бот работает через long polling.
+Telegram-бот на aiogram 3 с PostgreSQL, Redis, SQLAlchemy 2, Alembic и отдельным
+FastAPI-приложением для webhook. Реализованы тарифы и заказы предыдущих этапов,
+trial на 7 дней, промокоды, локальные подписки, платежная модель и защищённая
+админ-панель.
 
 ## Настройка
 
-Создайте `.env` на основе `.env.example` и заполните:
+Скопируйте `.env.example` в `.env` и заполните как минимум:
 
-- `TELEGRAM_BOT_TOKEN` — токен от BotFather;
-- `ADMIN_IDS` — Telegram ID администраторов через запятую, либо пустая строка;
-- `POSTGRES_PASSWORD` — стойкий пароль PostgreSQL.
+- `TELEGRAM_BOT_TOKEN` — токен BotFather;
+- `ADMIN_IDS` — Telegram ID администраторов через запятую;
+- `POSTGRES_PASSWORD` — пароль PostgreSQL;
+- `PUBLIC_BASE_URL` — публичный HTTPS-адрес сервиса webhook.
 
-Остальные значения подходят для запуска через Docker Compose без изменений.
+Переменные `ONLIPAY_*` оставлены предварительными. Публичная документация
+merchant API OnliPay не опубликована, поэтому реальный transport и проверка
+подписи намеренно заблокированы до получения официального контракта. Бот не
+создаёт вымышленные endpoint'ы и не подтверждает оплату по success URL.
 
 ## Запуск
 
 ```bash
-cp .env.example .env
 docker compose up -d --build
 docker compose ps
 ```
 
-При запуске контейнер `bot` ждёт healthcheck PostgreSQL и Redis, применяет
-миграции, затем запускает long polling.
+Сервис `migrate` однократно применяет миграции. После его успешного завершения
+запускаются `bot` и `webhook`. Endpoint webhook:
+
+```text
+POST /api/webhooks/onlipay
+```
+
+До подключения официального verifier endpoint отвечает `503` и не изменяет БД.
 
 ## Миграции
 
 ```bash
-docker compose run --rm bot alembic upgrade head
-docker compose run --rm bot alembic current
-docker compose run --rm bot alembic downgrade -1
-```
-
-Создание следующей миграции после изменения моделей:
-
-```bash
-docker compose run --rm bot alembic revision --autogenerate -m "description"
+docker compose run --rm migrate alembic upgrade head
+docker compose run --rm migrate alembic current
+docker compose run --rm migrate alembic downgrade -1
 ```
 
 ## Проверки
 
-Локально с Python 3.12:
-
 ```bash
-python -m venv .venv
-.venv/Scripts/pip install -e ".[dev]"
 .venv/Scripts/ruff check .
-.venv/Scripts/pytest
+.venv/Scripts/pytest -p no:cacheprovider
 ```
 
-В Linux/macOS вместо `.venv/Scripts/` используется `.venv/bin/`.
+## Команды бота
 
-## Логи и остановка
+- `/start` — регистрация и главное меню;
+- `/edik` — основная команда админ-панели, доступная только `ADMIN_IDS`;
+- `/admin` — скрытый совместимый alias;
+- `/new_promo` — пошаговое создание промокода администратором.
+
+Trial и оплаченная подписка регистрируются локально через `SubscriptionService`.
+До документированного подключения Remnawave бот не создаёт VPN-ссылки и честно
+сообщает, что внешняя выдача доступа ожидает подключения сервиса.
+
+## Логи
 
 ```bash
-docker compose logs -f bot
-docker compose logs --tail=100 postgres redis
-docker compose down
+docker compose logs -f bot webhook
+docker compose logs --tail=100 migrate postgres redis
 ```
 
-Команда `/start` создаёт пользователя или обновляет его Telegram-данные,
-после чего показывает приветствие и inline-меню. Все пункты меню на этом этапе
-отвечают: «Раздел находится в разработке».
+## Remnawave (этап 4)
+
+Бот использует официальный REST API Remnawave и создаёт отдельного пользователя
+панели для каждого Telegram ID. Заполните `REMNAWAVE_API_TOKEN`,
+`REMNAWAVE_INTERNAL_SQUAD_UUID` и `SUBSCRIPTION_ENCRYPTION_KEY` в `.env`.
+Остальные параметры и безопасные значения по умолчанию приведены в
+`.env.example`.
+
+API token создаётся в панели Remnawave в разделе `API Tokens`. UUID Internal
+Squad берётся из карточки нужного squad в разделе `Internal Squads`. Fernet-ключ
+для шифрования ссылок можно создать командой:
+
+```bash
+python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+```
+
+Администраторские команды: `/sync_remnawave`, `/grant_vpn`. Состояние интеграции
+доступно в `/edik` → `🌐 Remnawave`. При временной недоступности API бот
+продолжает работать, а оплаченные и trial-активации остаются в очереди повторов.

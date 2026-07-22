@@ -10,13 +10,7 @@ from app.database.repositories import UserRepository
 
 logger = logging.getLogger(__name__)
 router = Router(name=__name__)
-MENU_CALLBACKS = {
-    "buy_vpn",
-    "my_subscription",
-    "tariffs",
-    "how_to_connect",
-    "support",
-}
+MENU_CALLBACKS = {"how_to_connect", "support"}
 
 
 @router.message(CommandStart())
@@ -28,18 +22,16 @@ async def handle_start(
     telegram_user = message.from_user
     if telegram_user is None:
         return
-
-    async with session_factory() as session:
+    async with session_factory() as session, session.begin():
         repository = UserRepository(session)
-        await repository.get_or_create(
+        user, _ = await repository.get_or_create(
             telegram_id=telegram_user.id,
             username=telegram_user.username,
             first_name=telegram_user.first_name,
             last_name=telegram_user.last_name,
             is_admin=telegram_user.id in admin_ids,
         )
-        await session.commit()
-
+        user.is_admin = telegram_user.id in admin_ids
     logger.info("Processed /start for Telegram user %s", telegram_user.id)
     await message.answer(
         "Добро пожаловать! Выберите нужный раздел:",

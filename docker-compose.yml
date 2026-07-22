@@ -1,14 +1,36 @@
 services:
-  bot:
+  migrate:
     build: .
-    restart: unless-stopped
-    env_file: .env
+    env_file:
+      - .env
     depends_on:
       postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
-    command: ["sh", "-c", "alembic upgrade head && exec python -m app.main"]
+    command: ["alembic", "upgrade", "head"]
+
+  bot:
+    build: .
+    restart: unless-stopped
+    env_file:
+      - .env
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    command: ["python", "-m", "app.main"]
+
+  webhook:
+    build: .
+    restart: unless-stopped
+    env_file:
+      - .env
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    command: ["uvicorn", "app.web:app", "--host", "0.0.0.0", "--port", "8000"]
+    ports:
+      - "8000:8000"
 
   postgres:
     image: postgres:16-alpine

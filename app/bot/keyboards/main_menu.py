@@ -7,6 +7,16 @@ def build_main_menu() -> InlineKeyboardMarkup:
             [InlineKeyboardButton(text="Купить VPN", callback_data="buy_vpn")],
             [
                 InlineKeyboardButton(
+                    text="🎁 Получить 7 дней бесплатно", callback_data="activate_trial"
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="🎟 Ввести промокод", callback_data="promo_enter"
+                )
+            ],
+            [
+                InlineKeyboardButton(
                     text="Моя подписка", callback_data="my_subscription"
                 )
             ],

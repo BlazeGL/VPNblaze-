@@ -1,5 +1,7 @@
 from functools import lru_cache
 from typing import Annotated
+from urllib.parse import urlsplit
+from uuid import UUID
 
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
@@ -22,6 +24,20 @@ class Settings(BaseSettings):
     redis_host: str = "redis"
     redis_port: int = 6379
     log_level: str = "INFO"
+    onlipay_api_url: str | None = None
+    onlipay_api_key: str | None = None
+    onlipay_secret_key: str | None = None
+    onlipay_merchant_id: str | None = None
+    onlipay_webhook_secret: str | None = None
+    public_base_url: str | None = None
+    remnawave_base_url: str | None = None
+    remnawave_api_token: str | None = None
+    remnawave_internal_squad_uuid: str | None = None
+    remnawave_request_timeout: float = Field(default=15, gt=0)
+    remnawave_verify_ssl: bool = True
+    remnawave_max_retries: int = Field(default=3, ge=0, le=10)
+    remnawave_retry_base_delay: float = Field(default=1, ge=0)
+    subscription_encryption_key: str | None = None
 
     @field_validator("admin_ids", mode="before")
     @classmethod
@@ -29,6 +45,42 @@ class Settings(BaseSettings):
         if isinstance(value, str):
             return [int(item.strip()) for item in value.split(",") if item.strip()]
         return value
+
+    @field_validator(
+        "onlipay_api_url",
+        "onlipay_api_key",
+        "onlipay_secret_key",
+        "onlipay_merchant_id",
+        "onlipay_webhook_secret",
+        "public_base_url",
+        "remnawave_api_token",
+        "subscription_encryption_key",
+        mode="before",
+    )
+    @classmethod
+    def empty_string_to_none(cls, value: object) -> object:
+        return None if value == "" else value
+
+    @field_validator("remnawave_base_url", mode="before")
+    @classmethod
+    def validate_remnawave_base_url(cls, value: object) -> object:
+        if value is None or (isinstance(value, str) and not value.strip()):
+            return None
+        candidate = str(value).strip().rstrip("/")
+        parsed = urlsplit(candidate)
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            raise ValueError("REMNAWAVE_BASE_URL must be an HTTP(S) URL")
+        return candidate
+
+    @field_validator("remnawave_internal_squad_uuid", mode="before")
+    @classmethod
+    def validate_internal_squad_uuid(cls, value: object) -> object:
+        if value is None or (isinstance(value, str) and not value.strip()):
+            return None
+        try:
+            return str(UUID(str(value).strip()))
+        except ValueError as exc:
+            raise ValueError("REMNAWAVE_INTERNAL_SQUAD_UUID must be a UUID") from exc
 
     @property
     def database_url(self) -> str:
@@ -40,6 +92,16 @@ class Settings(BaseSettings):
     @property
     def redis_url(self) -> str:
         return f"redis://{self.redis_host}:{self.redis_port}/0"
+
+    @property
+    def remnawave_missing_settings(self) -> list[str]:
+        values = {
+            "REMNAWAVE_BASE_URL": self.remnawave_base_url,
+            "REMNAWAVE_API_TOKEN": self.remnawave_api_token,
+            "REMNAWAVE_INTERNAL_SQUAD_UUID": self.remnawave_internal_squad_uuid,
+            "SUBSCRIPTION_ENCRYPTION_KEY": self.subscription_encryption_key,
+        }
+        return [name for name, value in values.items() if not value]
 
 
 @lru_cache

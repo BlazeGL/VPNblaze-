@@ -2,12 +2,19 @@ import asyncio
 import logging
 
 from aiogram import Bot, Dispatcher
+from aiogram.client.default import DefaultBotProperties
 from aiogram.fsm.storage.redis import RedisStorage
+from redis.asyncio import Redis
 
 from app.bot.handlers import setup_routers
 from app.core.config import get_settings
+from app.core.crypto import SubscriptionUrlCipher
 from app.core.logging import configure_logging
 from app.database.session import create_engine_and_session
+from app.integrations.onlipay.client import OnliPayClient
+from app.integrations.remnawave.client import RemnawaveClient
+from app.integrations.remnawave.exceptions import RemnawaveError
+from app.workers.subscription_retry import retry_subscription_activations
 
 logger = logging.getLogger(__name__)
 
@@ -17,23 +24,90 @@ async def main() -> None:
     configure_logging(settings.log_level)
     engine, session_factory = create_engine_and_session(settings.database_url)
     storage = RedisStorage.from_url(settings.redis_url)
-    bot = Bot(token=settings.telegram_bot_token)
+    redis_client = Redis.from_url(settings.redis_url, decode_responses=True)
+    onlipay_client = OnliPayClient()
+    remnawave_client: RemnawaveClient | None = None
+    subscription_cipher: SubscriptionUrlCipher | None = None
+    logger.info(
+        "Remnawave configuration:\n"
+        "- base_url: %s\n"
+        "- api_token: %s\n"
+        "- internal_squad_uuid: %s\n"
+        "- encryption_key: %s",
+        "configured" if settings.remnawave_base_url else "missing",
+        "configured" if settings.remnawave_api_token else "missing",
+        "configured" if settings.remnawave_internal_squad_uuid else "missing",
+        "configured" if settings.subscription_encryption_key else "missing",
+    )
+    if settings.remnawave_missing_settings:
+        logger.error(
+            "Remnawave provisioning is disabled; missing settings: %s",
+            ", ".join(settings.remnawave_missing_settings),
+        )
+    else:
+        try:
+            subscription_cipher = SubscriptionUrlCipher(
+                settings.subscription_encryption_key or ""
+            )
+            remnawave_client = RemnawaveClient(
+                settings.remnawave_base_url or "",
+                settings.remnawave_api_token or "",
+                timeout=settings.remnawave_request_timeout,
+                verify_ssl=settings.remnawave_verify_ssl,
+                max_retries=settings.remnawave_max_retries,
+                retry_base_delay=settings.remnawave_retry_base_delay,
+            )
+            await remnawave_client.check_api()
+            logger.info("Remnawave API authentication and availability check succeeded")
+            await remnawave_client.get_internal_squad(
+                settings.remnawave_internal_squad_uuid or ""
+            )
+            logger.info("Remnawave Internal Squad validation succeeded")
+        except (RemnawaveError, ValueError) as exc:
+            logger.error("Remnawave API is unavailable; bot will continue: %s", exc)
+    bot = Bot(
+        token=settings.telegram_bot_token,
+        default=DefaultBotProperties(link_preview_is_disabled=True),
+    )
     dispatcher = Dispatcher(storage=storage)
     dispatcher.include_router(setup_routers())
+    stop_retry_worker = asyncio.Event()
+    retry_worker = asyncio.create_task(
+        retry_subscription_activations(
+            session_factory=session_factory,
+            bot=bot,
+            admin_ids=set(settings.admin_ids),
+            stop_event=stop_retry_worker,
+            remnawave_client=remnawave_client,
+            subscription_cipher=subscription_cipher,
+            internal_squad_uuid=settings.remnawave_internal_squad_uuid,
+        )
+    )
     logger.info("Starting VPN bot in long polling mode")
     try:
         await dispatcher.start_polling(
             bot,
             session_factory=session_factory,
             admin_ids=set(settings.admin_ids),
+            onlipay_client=onlipay_client,
+            public_base_url=settings.public_base_url,
+            redis_client=redis_client,
+            remnawave_client=remnawave_client,
+            subscription_cipher=subscription_cipher,
+            remnawave_internal_squad_uuid=settings.remnawave_internal_squad_uuid,
         )
     except Exception:
         logger.exception("Bot stopped because of an unexpected error")
         raise
     finally:
         logger.info("Shutting down bot resources")
+        stop_retry_worker.set()
+        await retry_worker
         await bot.session.close()
         await storage.close()
+        await redis_client.aclose()
+        if remnawave_client is not None:
+            await remnawave_client.aclose()
         await engine.dispose()
         logger.info("Bot stopped")
 

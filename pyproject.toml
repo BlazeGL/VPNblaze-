@@ -11,9 +11,13 @@ dependencies = [
     "aiogram>=3.13,<4",
     "alembic>=1.13,<2",
     "asyncpg>=0.29,<1",
+    "fastapi>=0.115,<1",
+    "cryptography>=43,<46",
+    "httpx>=0.28,<1",
     "pydantic-settings>=2.5,<3",
     "redis>=5,<6",
     "sqlalchemy[asyncio]>=2.0,<3",
+    "uvicorn>=0.32,<1",
 ]
 
 [project.optional-dependencies]
@@ -29,6 +33,7 @@ packages = ["app"]
 [tool.ruff]
 target-version = "py312"
 line-length = 88
+extend-exclude = ["pytest-cache-files-*"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "ASYNC"]
