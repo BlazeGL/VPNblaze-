@@ -444,6 +444,7 @@ def test_invalid_internal_squad_uuid_is_rejected() -> None:
         Settings(
             telegram_bot_token="bot-token",
             postgres_password="db-password",
+            remnawave_api_token="api-token",
             remnawave_internal_squad_uuid="not-a-uuid",
             _env_file=None,
         )

@@ -3,8 +3,30 @@ from typing import Annotated
 from urllib.parse import urlsplit
 from uuid import UUID
 
-from pydantic import Field, field_validator
+from pydantic import Field, ValidationInfo, field_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
+
+DEFAULT_YOOKASSA_API_URL = "https://api.yookassa.ru/v3"
+DEFAULT_YOOKASSA_REQUEST_TIMEOUT = 15.0
+DEFAULT_REMNAWAVE_REQUEST_TIMEOUT = 15.0
+DEFAULT_REMNAWAVE_VERIFY_SSL = True
+DEFAULT_REMNAWAVE_MAX_RETRIES = 3
+DEFAULT_REMNAWAVE_RETRY_BASE_DELAY = 1.0
+
+EMPTY_VALUE_DEFAULTS: dict[str, object] = {
+    "postgres_db": "vpn_bot",
+    "postgres_user": "vpn_bot",
+    "postgres_host": "postgres",
+    "postgres_port": 5432,
+    "redis_host": "redis",
+    "redis_port": 6379,
+    "log_level": "INFO",
+    "yookassa_request_timeout": DEFAULT_YOOKASSA_REQUEST_TIMEOUT,
+    "remnawave_request_timeout": DEFAULT_REMNAWAVE_REQUEST_TIMEOUT,
+    "remnawave_verify_ssl": DEFAULT_REMNAWAVE_VERIFY_SSL,
+    "remnawave_max_retries": DEFAULT_REMNAWAVE_MAX_RETRIES,
+    "remnawave_retry_base_delay": DEFAULT_REMNAWAVE_RETRY_BASE_DELAY,
+}
 
 
 class Settings(BaseSettings):
@@ -32,16 +54,29 @@ class Settings(BaseSettings):
     public_base_url: str | None = None
     yookassa_shop_id: str | None = None
     yookassa_secret_key: str | None = None
-    yookassa_api_url: str = "https://api.yookassa.ru/v3"
+    yookassa_api_url: str = DEFAULT_YOOKASSA_API_URL
     yookassa_return_url: str | None = None
-    yookassa_request_timeout: float = Field(default=15, gt=0)
+    yookassa_request_timeout: float = Field(
+        default=DEFAULT_YOOKASSA_REQUEST_TIMEOUT,
+        gt=0,
+    )
     remnawave_base_url: str | None = None
-    remnawave_api_token: str | None = None
+    remnawave_api_token: str = Field(min_length=1)
     remnawave_internal_squad_uuid: str | None = None
-    remnawave_request_timeout: float = Field(default=15, gt=0)
-    remnawave_verify_ssl: bool = True
-    remnawave_max_retries: int = Field(default=3, ge=0, le=10)
-    remnawave_retry_base_delay: float = Field(default=1, ge=0)
+    remnawave_request_timeout: float = Field(
+        default=DEFAULT_REMNAWAVE_REQUEST_TIMEOUT,
+        gt=0,
+    )
+    remnawave_verify_ssl: bool = DEFAULT_REMNAWAVE_VERIFY_SSL
+    remnawave_max_retries: int = Field(
+        default=DEFAULT_REMNAWAVE_MAX_RETRIES,
+        ge=0,
+        le=10,
+    )
+    remnawave_retry_base_delay: float = Field(
+        default=DEFAULT_REMNAWAVE_RETRY_BASE_DELAY,
+        ge=0,
+    )
     subscription_encryption_key: str | None = None
     android_app_url: str | None = None
     ios_app_url: str | None = None
@@ -57,6 +92,17 @@ class Settings(BaseSettings):
             return [int(item.strip()) for item in value.split(",") if item.strip()]
         return value
 
+    @field_validator(*EMPTY_VALUE_DEFAULTS, mode="before")
+    @classmethod
+    def empty_string_to_default(
+        cls,
+        value: object,
+        info: ValidationInfo,
+    ) -> object:
+        if value is None or (isinstance(value, str) and not value.strip()):
+            return EMPTY_VALUE_DEFAULTS[info.field_name]
+        return value
+
     @field_validator(
         "onlipay_api_url",
         "onlipay_api_key",
@@ -67,7 +113,6 @@ class Settings(BaseSettings):
         "yookassa_shop_id",
         "yookassa_secret_key",
         "yookassa_return_url",
-        "remnawave_api_token",
         "subscription_encryption_key",
         "android_app_url",
         "ios_app_url",
@@ -109,9 +154,20 @@ class Settings(BaseSettings):
             raise ValueError("SUPPORT_URL must be an HTTPS URL")
         return candidate
 
-    @field_validator("yookassa_api_url", "yookassa_return_url", mode="before")
+    @field_validator("yookassa_api_url", mode="before")
     @classmethod
-    def validate_yookassa_url(cls, value: object) -> object:
+    def validate_yookassa_api_url(cls, value: object) -> str:
+        if value is None or (isinstance(value, str) and not value.strip()):
+            return DEFAULT_YOOKASSA_API_URL
+        candidate = str(value).strip().rstrip("/")
+        parsed = urlsplit(candidate)
+        if parsed.scheme != "https" or not parsed.netloc:
+            raise ValueError("YooKassa URLs must use HTTPS")
+        return candidate
+
+    @field_validator("yookassa_return_url", mode="before")
+    @classmethod
+    def validate_yookassa_return_url(cls, value: object) -> str | None:
         if value is None or (isinstance(value, str) and not value.strip()):
             return None
         candidate = str(value).strip().rstrip("/")
