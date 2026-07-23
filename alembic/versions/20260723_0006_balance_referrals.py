@@ -173,6 +173,9 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    raise RuntimeError(
+        "Destructive database downgrades are disabled for BlazeVPN"
+    )
     bind = op.get_bind()
     op.drop_column("subscriptions", "remnawave_traffic_limit_bytes")
     op.alter_column(

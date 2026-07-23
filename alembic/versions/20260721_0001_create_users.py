@@ -51,5 +51,8 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    raise RuntimeError(
+        "Destructive database downgrades are disabled for BlazeVPN"
+    )
     op.drop_index(op.f("ix_users_telegram_id"), table_name="users")
     op.drop_table("users")

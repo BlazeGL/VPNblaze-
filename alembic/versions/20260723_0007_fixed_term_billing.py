@@ -89,36 +89,10 @@ def upgrade() -> None:
             sa.Column(column, sa.DateTime(timezone=True), nullable=True),
         )
 
-    op.execute(
-        """
-        UPDATE tariffs
-        SET name = 'BlazeVPN — 30 дней',
-            price = 99.00,
-            duration_days = 30
-        WHERE id = (
-            SELECT id
-            FROM tariffs
-            WHERE is_active IS TRUE
-            ORDER BY sort_order, id
-            LIMIT 1
-        )
-        """
-    )
-    op.execute(
-        """
-        UPDATE subscriptions
-        SET status = 'pending',
-            provisioning_status = 'pending',
-            remnawave_status = NULL,
-            next_retry_at = NULL
-        WHERE status = 'disabled'
-          AND source_type = 'paid'
-          AND expires_at > now()
-        """
-    )
-
-
 def downgrade() -> None:
+    raise RuntimeError(
+        "Destructive database downgrades are disabled for BlazeVPN"
+    )
     for column in (
         "expired_notice_at",
         "expiry_notice_1d_at",

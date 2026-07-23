@@ -8,7 +8,9 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
-    command: ["alembic", "upgrade", "head"]
+    command: ["python", "-m", "app.database.startup"]
+    volumes:
+      - ./.db-state:/var/lib/blazevpn-state
 
   bot:
     build: .
@@ -61,4 +63,5 @@ services:
 
 volumes:
   postgres_data:
+    name: ${POSTGRES_VOLUME_NAME:-vpntg_postgres_data}
   redis_data:

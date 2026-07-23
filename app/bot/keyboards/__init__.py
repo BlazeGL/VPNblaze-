@@ -3,7 +3,6 @@ from app.bot.keyboards.tariffs import (
     build_order,
     build_payment,
     build_tariff_card,
-    build_tariffs,
 )
 
 __all__ = [
@@ -12,5 +11,4 @@ __all__ = [
     "build_order",
     "build_payment",
     "build_tariff_card",
-    "build_tariffs",
 ]

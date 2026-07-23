@@ -1,3 +1,4 @@
+import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Protocol
@@ -13,6 +14,8 @@ from app.database.models import (
     TrialActivation,
     User,
 )
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -138,10 +141,12 @@ class SubscriptionService:
             subscription.expiry_notice_3d_at = None
             subscription.expiry_notice_1d_at = None
             subscription.expired_notice_at = None
+            subscription.activation_notified_at = None
         await self.session.flush()
         return await self._provision(subscription, user)
 
     async def _provision(self, subscription: Subscription, user: User) -> Subscription:
+        previous_status = subscription.status
         try:
             result = await self.adapter.provision(subscription, user)
         except Exception as exc:
@@ -157,5 +162,14 @@ class SubscriptionService:
             subscription.subscription_url_encrypted = result.subscription_url_encrypted
         if result.status != SubscriptionStatus.activation_failed:
             subscription.last_activation_error = None
+        if (
+            previous_status != SubscriptionStatus.active
+            and result.status == SubscriptionStatus.active
+        ):
+            logger.info(
+                "subscription activated user_id=%s order_id=%s",
+                user.id,
+                subscription.order_id,
+            )
         await self.session.flush()
         return subscription

@@ -110,6 +110,7 @@ async def test_new_user_gets_exact_seven_day_trial() -> None:
         days=7
     )
     assert user.trial_used is True
+    assert result.activation.telegram_id == user.telegram_id
 
 
 @pytest.mark.asyncio
@@ -136,6 +137,46 @@ def test_parallel_trial_has_database_unique_backstop() -> None:
         if index.unique
     )
     assert ("user_id",) in unique_column_sets
+    assert ("telegram_id",) in unique_column_sets
+
+
+@pytest.mark.asyncio
+async def test_trial_history_is_matched_by_telegram_id() -> None:
+    session = session_mock()
+    user = make_user()
+    activation = TrialActivation(
+        user_id=999,
+        telegram_id=user.telegram_id,
+        started_at=datetime.now(UTC) - timedelta(days=8),
+        expires_at=datetime.now(UTC) - timedelta(days=1),
+    )
+    session.scalar.side_effect = [user, activation]
+
+    result = await TrialService(session).activate(user.telegram_id)
+
+    assert result.activated is False
+    assert result.reason == "already_used"
+    assert result.activation is activation
+
+
+@pytest.mark.asyncio
+async def test_expired_paid_subscription_permanently_disables_trial() -> None:
+    session = session_mock()
+    user = make_user()
+    paid = Subscription(
+        user_id=user.id,
+        source_type=SubscriptionSource.paid,
+        status=SubscriptionStatus.expired,
+        started_at=datetime.now(UTC) - timedelta(days=60),
+        expires_at=datetime.now(UTC) - timedelta(days=30),
+        device_limit=1,
+    )
+    session.scalar.side_effect = [user, None, paid]
+
+    result = await TrialService(session).activate(user.telegram_id)
+
+    assert result.activated is False
+    assert result.reason == "paid_subscription_exists"
 
 
 @pytest.mark.asyncio

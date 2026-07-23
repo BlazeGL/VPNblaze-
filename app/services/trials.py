@@ -1,13 +1,17 @@
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import select
+from sqlalchemy import exists, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database.models import (
+    Order,
+    OrderPurpose,
+    OrderStatus,
+    Payment,
+    PaymentStatus,
     Subscription,
     SubscriptionSource,
-    SubscriptionStatus,
     TrialActivation,
     User,
 )
@@ -48,7 +52,9 @@ class TrialService:
             return TrialActivationResult(False, "user_not_found")
 
         existing = await self.session.scalar(
-            select(TrialActivation).where(TrialActivation.user_id == user.id)
+            select(TrialActivation).where(
+                TrialActivation.telegram_id == telegram_id
+            )
         )
         if user.trial_used or existing is not None:
             add_audit_log(
@@ -66,21 +72,39 @@ class TrialService:
         if user.is_blocked:
             return TrialActivationResult(False, "blocked")
 
-        paid_subscription = await self.session.scalar(
-            select(Subscription).where(
-                Subscription.user_id == user.id,
-                Subscription.source_type == SubscriptionSource.paid,
-                Subscription.status.in_(
-                    [SubscriptionStatus.active, SubscriptionStatus.pending]
-                ),
-                Subscription.expires_at > moment,
+        paid_history_exists = await self.session.scalar(
+            select(
+                or_(
+                    exists().where(
+                        Subscription.user_id == user.id,
+                        Subscription.source_type == SubscriptionSource.paid,
+                    ),
+                    exists().where(
+                        Order.user_id == user.id,
+                        Order.purpose == OrderPurpose.subscription_purchase,
+                        Order.status.in_(
+                            [
+                                OrderStatus.paid,
+                                OrderStatus.processing,
+                                OrderStatus.completed,
+                            ]
+                        ),
+                    ),
+                    exists().where(
+                        Payment.order_id == Order.id,
+                        Order.user_id == user.id,
+                        Order.purpose == OrderPurpose.subscription_purchase,
+                        Payment.status == PaymentStatus.paid,
+                    ),
+                )
             )
         )
-        if paid_subscription is not None:
+        if paid_history_exists:
             return TrialActivationResult(False, "paid_subscription_exists")
 
         activation = TrialActivation(
             user_id=user.id,
+            telegram_id=telegram_id,
             started_at=moment,
             expires_at=moment + timedelta(days=self.DAYS),
         )

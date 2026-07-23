@@ -6,7 +6,12 @@ from aiogram import F, Router
 from aiogram.enums import ChatType, ParseMode
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-from aiogram.types import CallbackQuery, Message
+from aiogram.types import (
+    CallbackQuery,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    Message,
+)
 from redis.asyncio import Redis
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -17,18 +22,15 @@ from app.bot.keyboards.start import (
     BUY_SUBSCRIPTION_CALLBACK,
     TARIFFS_CALLBACK,
 )
-from app.bot.keyboards.subscription import activation_keyboard
 from app.bot.keyboards.tariffs import (
     build_insufficient_funds,
     build_order,
     build_tariff_card,
-    build_tariffs,
     money,
 )
 from app.bot.rendering import edit_text_or_caption
-from app.bot.texts.subscription import activation_text
 from app.core.crypto import SubscriptionUrlCipher
-from app.database.models import OrderPurpose, Payment
+from app.database.models import OrderPurpose, Payment, Tariff
 from app.database.repositories import (
     OrderOwnershipError,
     OrderRepository,
@@ -38,6 +40,7 @@ from app.database.repositories import (
 from app.integrations.remnawave.client import RemnawaveClient
 from app.integrations.yookassa.client import YooKassaClient
 from app.integrations.yookassa.exceptions import YooKassaError
+from app.services.activation_notifications import send_activation_notification
 from app.services.billing import BillingService, BillingValidationError
 from app.services.payments import PaymentService, PaymentValidationError
 from app.services.remnawave_factory import build_subscription_service
@@ -54,6 +57,17 @@ def traffic(limit: int | None, unlimited: bool) -> str:
     return "Безлимит" if unlimited else f"{limit} ГБ"
 
 
+def render_tariff_screen(tariff: Tariff) -> tuple[str, InlineKeyboardMarkup]:
+    text = (
+        f"⚡ <b>{tariff.name}</b>\n\n"
+        f"💳 Стоимость: <b>{money(tariff.price, tariff.currency)}</b>\n"
+        f"📅 Срок: <b>{tariff.duration_days} дней</b>\n"
+        "🌐 Трафик: "
+        f"<b>{traffic(tariff.traffic_limit_gb, tariff.is_unlimited_traffic)}</b>"
+    )
+    return text, build_tariff_card(tariff)
+
+
 @router.callback_query(
     F.data.in_({TARIFFS_CALLBACK, BUY_SUBSCRIPTION_CALLBACK})
 )
@@ -64,46 +78,28 @@ async def show_tariffs(
         tariffs = await TariffRepository(session).get_active()
     await callback.answer()
     if callback.message:
-        text = (
-            "Выберите тариф:"
-            if tariffs
-            else (
+        if tariffs:
+            text, markup = render_tariff_screen(tariffs[0])
+        else:
+            text = (
                 "Сейчас нет доступных тарифов. Попробуйте позже или "
                 "обратитесь в поддержку."
             )
-        )
+            markup = InlineKeyboardMarkup(
+                inline_keyboard=[
+                    [
+                        InlineKeyboardButton(
+                            text="⬅️ Назад",
+                            callback_data="main_menu",
+                        )
+                    ]
+                ]
+            )
         await edit_text_or_caption(
             callback.message,
             text,
-            build_tariffs(tariffs),
-        )
-
-
-@router.callback_query(TariffCallback.filter(F.action == "view"))
-async def show_tariff(
-    callback: CallbackQuery,
-    callback_data: TariffCallback,
-    session_factory: async_sessionmaker[AsyncSession],
-) -> None:
-    async with session_factory() as session:
-        tariff = await TariffRepository(session).get_by_id(callback_data.tariff_id)
-    if tariff is None or not tariff.is_active:
-        await callback.answer("Тариф недоступен", show_alert=True)
-        return
-    description = f"\n{tariff.description}\n" if tariff.description else "\n"
-    text = (
-        f"🚀 Тариф «{tariff.name}»\n{description}\n"
-        f"Срок: {tariff.duration_days} дней\n"
-        f"Трафик: {traffic(tariff.traffic_limit_gb, tariff.is_unlimited_traffic)}\n"
-        f"Устройства: до {tariff.device_limit}\n"
-        f"Стоимость: {money(tariff.price, tariff.currency)}"
-    )
-    await callback.answer()
-    if callback.message:
-        await edit_text_or_caption(
-            callback.message,
-            text,
-            build_tariff_card(tariff.id, tariff.price),
+            markup,
+            parse_mode=ParseMode.HTML,
         )
 
 
@@ -211,10 +207,18 @@ async def purchase_from_balance(
         show_alert=True,
     )
     if callback.message:
-        await callback.message.answer(
-            "✅ Подписка активирована\n\n"
-            f"Списано: {money(result.amount)}\n"
-            f"Баланс: {money(result.balance_after)}"
+        if not result.already_processed:
+            await callback.message.answer(
+                "✅ Оплата сохранена\n\n"
+                f"Списано: {money(result.amount)}\n"
+                f"Баланс: {money(result.balance_after)}"
+            )
+    if result.subscription is not None:
+        await send_activation_notification(
+            session_factory,
+            bot=callback.bot,
+            subscription_id=result.subscription.id,
+            cipher=subscription_cipher,
         )
 
 
@@ -480,23 +484,12 @@ async def check_payment(
                     "Пополнение кошелька завершено. Для продления VPN "
                     "подтвердите покупку тарифа отдельно."
                 )
-            elif (
-                result.subscription is not None
-                and result.subscription.subscription_url_encrypted
-                and subscription_cipher is not None
-            ):
-                url = subscription_cipher.decrypt(
-                    result.subscription.subscription_url_encrypted
-                )
-                await callback.message.answer(
-                    activation_text(result.subscription, url),
-                    reply_markup=activation_keyboard(),
-                    parse_mode=ParseMode.HTML,
-                )
-            else:
-                await callback.message.answer(
-                    "✅ Оплата подтверждена. Подписка активирована. "
-                    "Ссылка ещё готовится."
+            elif result.subscription is not None:
+                await send_activation_notification(
+                    session_factory,
+                    bot=callback.bot,
+                    subscription_id=result.subscription.id,
+                    cipher=subscription_cipher,
                 )
     else:
         await callback.answer(

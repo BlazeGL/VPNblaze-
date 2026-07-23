@@ -158,6 +158,9 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    raise RuntimeError(
+        "Destructive database downgrades are disabled for BlazeVPN"
+    )
     for column in (
         "next_retry_at",
         "status",

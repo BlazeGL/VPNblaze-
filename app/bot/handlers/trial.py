@@ -3,7 +3,7 @@ from datetime import UTC
 
 from aiogram import F, Router
 from aiogram.enums import ChatType, ParseMode
-from aiogram.types import CallbackQuery
+from aiogram.types import CallbackQuery, InlineKeyboardMarkup
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -17,11 +17,10 @@ from app.bot.keyboards.start import (
 from app.bot.keyboards.subscription import activation_keyboard, subscription_menu
 from app.bot.rendering import edit_text_or_caption
 from app.bot.texts.account import account_text, empty_account_text
-from app.bot.texts.subscription import activation_text
 from app.core.crypto import SubscriptionUrlCipher
-from app.database.models import Subscription, Tariff, User
+from app.database.models import Subscription, SubscriptionStatus, Tariff, User
 from app.integrations.remnawave.client import RemnawaveClient
-from app.services.audit import add_audit_log
+from app.services.activation_notifications import deliver_activation_notification
 from app.services.remnawave_factory import build_subscription_service
 from app.services.remnawave_sync import RemnawaveSyncService
 from app.services.trials import TrialService
@@ -59,17 +58,6 @@ async def activate_trial(
             result = await TrialService(session, service).activate(
                 callback.from_user.id
             )
-            if (
-                result.subscription is not None
-                and result.subscription.subscription_url_encrypted
-            ):
-                add_audit_log(
-                    session,
-                    action="subscription_url_sent",
-                    entity_type="subscription",
-                    entity_id=result.subscription.id,
-                    actor_telegram_id=callback.from_user.id,
-                )
     except IntegrityError:
         await callback.answer(
             "Вы уже использовали бесплатный пробный период.", show_alert=True
@@ -79,16 +67,28 @@ async def activate_trial(
     if callback.message is None:
         return
     if result.activated and result.activation is not None and result.subscription:
-        if result.subscription.subscription_url_encrypted and subscription_cipher:
-            url = subscription_cipher.decrypt(
-                result.subscription.subscription_url_encrypted
-            )
-            await edit_text_or_caption(
-                callback.message,
-                activation_text(result.subscription, url),
-                activation_keyboard(),
-                parse_mode=ParseMode.HTML,
-            )
+        if result.subscription.status == SubscriptionStatus.active:
+
+            async def sender(
+                _telegram_id: int,
+                text: str,
+                reply_markup: InlineKeyboardMarkup | None,
+                parse_mode: ParseMode | None,
+            ) -> None:
+                await edit_text_or_caption(
+                    callback.message,
+                    text,
+                    reply_markup or activation_keyboard(),
+                    parse_mode=parse_mode,
+                )
+
+            async with session_factory() as session, session.begin():
+                await deliver_activation_notification(
+                    session,
+                    subscription_id=result.subscription.id,
+                    cipher=subscription_cipher,
+                    sender=sender,
+                )
         else:
             await edit_text_or_caption(
                 callback.message,
@@ -112,7 +112,10 @@ async def activate_trial(
         "already_used": "Вы уже использовали бесплатный пробный период.",
         "disabled": "Пробный период недоступен для вашей учётной записи.",
         "blocked": "Пробный период недоступен для заблокированной учётной записи.",
-        "paid_subscription_exists": "У вас уже есть действующая платная подписка.",
+        "paid_subscription_exists": (
+            "Вы уже приобретали подписку; пробный период доступен только до "
+            "первой покупки."
+        ),
         "user_not_found": "Сначала нажмите /start.",
     }
     await edit_text_or_caption(
@@ -201,6 +204,8 @@ async def show_subscription(
     text, state = account_text(
         subscription,
         tariff.name if tariff else None,
+        tariff_price=tariff.price if tariff else None,
+        tariff_currency=tariff.currency if tariff else "RUB",
         user=user,
         sync_unavailable=(
             sync_unavailable or bool(subscription.remnawave_sync_error)

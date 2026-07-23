@@ -9,35 +9,18 @@ def money(value: object, currency: str = "RUB") -> str:
     return f"{amount} ₽" if currency == "RUB" else f"{amount} {currency}"
 
 
-def build_tariffs(tariffs: list[Tariff]) -> InlineKeyboardMarkup:
-    rows = [
-        [
-            InlineKeyboardButton(
-                text=f"{tariff.name} — {money(tariff.price, tariff.currency)}",
-                callback_data=TariffCallback(action="view", tariff_id=tariff.id).pack(),
-            )
-        ]
-        for tariff in tariffs
-    ]
-    rows.append([InlineKeyboardButton(text="Главное меню", callback_data="main_menu")])
-    return InlineKeyboardMarkup(inline_keyboard=rows)
-
-
-def build_tariff_card(
-    tariff_id: int, price: object = 99
-) -> InlineKeyboardMarkup:
+def build_tariff_card(tariff: Tariff) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
                 InlineKeyboardButton(
-                    text=f"Купить за {money(price)}",
+                    text=f"💳 Купить за {money(tariff.price, tariff.currency)}",
                     callback_data=TariffCallback(
-                        action="buy", tariff_id=tariff_id
+                        action="buy", tariff_id=tariff.id
                     ).pack(),
                 )
             ],
-            [InlineKeyboardButton(text="Назад к тарифам", callback_data="tariffs")],
-            [InlineKeyboardButton(text="Главное меню", callback_data="main_menu")],
+            [InlineKeyboardButton(text="⬅️ Назад", callback_data="main_menu")],
         ]
     )
 
@@ -106,9 +89,7 @@ def build_insufficient_funds(
             [
                 InlineKeyboardButton(
                     text="⬅️ Назад",
-                    callback_data=TariffCallback(
-                        action="view", tariff_id=order.tariff_id or 0
-                    ).pack(),
+                    callback_data="tariffs",
                 )
             ],
         ]

@@ -27,8 +27,8 @@ from app.bot.keyboards.start import agreement_button
 from app.bot.rendering import edit_text_or_caption
 from app.core.config import Settings
 from app.core.crypto import SubscriptionUrlCipher
-from app.database.models import BalanceTransaction, BalanceTransactionType
-from app.database.repositories import UserRepository
+from app.database.models import BalanceTransaction, BalanceTransactionType, Tariff
+from app.database.repositories import TariffRepository, UserRepository
 from app.integrations.remnawave.client import RemnawaveClient
 from app.services.balance import BalanceService
 
@@ -305,12 +305,15 @@ def _transaction_line(transaction: BalanceTransaction) -> str:
     return f"• {sign}{_money(transaction.amount)} ₽ — {label}"
 
 
-def balance_keyboard() -> InlineKeyboardMarkup:
+def balance_keyboard(tariff: Tariff | None = None) -> InlineKeyboardMarkup:
+    purchase_label = "💳 Купить подписку"
+    if tariff is not None:
+        purchase_label = f"{purchase_label} за {_money(tariff.price)} ₽"
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
                 InlineKeyboardButton(
-                    text="💳 Купить подписку за 99 ₽",
+                    text=purchase_label,
                     callback_data="buy_vpn",
                 )
             ],
@@ -360,6 +363,8 @@ async def show_balance(
             if user is not None
             else []
         )
+        tariffs = await TariffRepository(session).get_active()
+        tariff = tariffs[0] if tariffs else None
     if user is None:
         await callback.answer("Сначала нажмите /start.", show_alert=True)
         return
@@ -368,13 +373,20 @@ async def show_balance(
         if transactions
         else "Операций пока нет."
     )
+    tariff_summary = (
+        (
+            "Стоимость подписки:\n"
+            f"<b>{_money(tariff.price)} ₽ за {tariff.duration_days} дней</b>\n\n"
+        )
+        if tariff is not None
+        else ""
+    )
     text = (
         "💰 <b>Ваш баланс</b>\n\n"
         f"<b>{_money(user.balance)} ₽</b>\n\n"
         "Баланс можно пополнять через ЮKassa и получать бонусы "
         "за приглашённых друзей.\n\n"
-        "Стоимость подписки:\n"
-        "<b>99 ₽ за 30 дней</b>\n\n"
+        f"{tariff_summary}"
         "Последние операции:\n\n"
         f"{history}"
     )
@@ -382,7 +394,7 @@ async def show_balance(
     await edit_text_or_caption(
         callback.message,
         text,
-        balance_keyboard(),
+        balance_keyboard(tariff),
         parse_mode=ParseMode.HTML,
     )
 

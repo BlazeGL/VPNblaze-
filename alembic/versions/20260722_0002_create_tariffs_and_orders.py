@@ -148,7 +148,7 @@ def upgrade() -> None:
                     "name": "1 месяц",
                     "description": None,
                     "duration_days": 30,
-                    "price": "199.00",
+                    "price": "99.00",
                     "currency": "RUB",
                     "traffic_limit_gb": 200,
                     "is_unlimited_traffic": False,
@@ -197,6 +197,9 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    raise RuntimeError(
+        "Destructive database downgrades are disabled for BlazeVPN"
+    )
     op.drop_index(op.f("ix_orders_user_id"), table_name="orders")
     op.drop_index(op.f("ix_orders_tariff_id"), table_name="orders")
     op.drop_index(op.f("ix_orders_status"), table_name="orders")

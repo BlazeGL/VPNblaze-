@@ -20,4 +20,7 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    raise RuntimeError(
+        "Destructive database downgrades are disabled for BlazeVPN"
+    )
     op.alter_column("payments", "provider", server_default="onlipay")

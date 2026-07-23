@@ -191,6 +191,8 @@ def account_text(
     subscription: Subscription,
     tariff_name: str | None,
     *,
+    tariff_price: object | None = None,
+    tariff_currency: str = "RUB",
     user: User | None = None,
     now: datetime | None = None,
     sync_unavailable: bool = False,
@@ -221,12 +223,18 @@ def account_text(
     )
     if tariff_name:
         display_tariff = (
-            f"{tariff_name} — 99 ₽"
-            if subscription.source_type == SubscriptionSource.paid
+            (
+                f"{tariff_name} — {_number(float(tariff_price))} "
+                f"{'₽' if tariff_currency == 'RUB' else tariff_currency}"
+            )
+            if (
+                subscription.source_type == SubscriptionSource.paid
+                and tariff_price is not None
+            )
             else tariff_name
         )
     elif subscription.source_type == SubscriptionSource.paid:
-        display_tariff = "30 дней — 99 ₽"
+        display_tariff = "Оплаченный тариф"
     elif subscription.source_type == SubscriptionSource.trial:
         display_tariff = "Пробный период"
     else:

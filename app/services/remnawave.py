@@ -104,6 +104,18 @@ class RemnawaveProvisioningService:
             subscription, user, source or subscription.source_type, order_id
         )
         if operation.status == ProvisioningOperationStatus.completed:
+            was_active = subscription.status == SubscriptionStatus.active
+            subscription.status = SubscriptionStatus.active
+            subscription.provisioning_status = ProvisioningStatus.active
+            subscription.last_activation_error = None
+            subscription.next_retry_at = None
+            if not was_active:
+                logger.info(
+                    "subscription activated user_id=%s order_id=%s",
+                    user.id,
+                    subscription.order_id,
+                )
+            await self.session.flush()
             return ProvisioningResult(
                 status=SubscriptionStatus.active,
                 external_user_uuid=subscription.remnawave_user_uuid,

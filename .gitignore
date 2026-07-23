@@ -9,6 +9,8 @@ __pycache__/
 pytest-cache-files-*/
 .tmp-*/
 .ruff_cache/
+.db-state/
+backups/
 .coverage
 htmlcov/
 .idea/

@@ -1,12 +1,9 @@
 import logging
 from collections.abc import Mapping
 
-from aiogram.enums import ParseMode
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from app.bot.keyboards.subscription import activation_keyboard
-from app.bot.texts.subscription import activation_text
 from app.core.config import Settings
 from app.database.models import OrderPurpose, User
 from app.integrations.payments import NormalizedPaymentStatus
@@ -16,6 +13,7 @@ from app.integrations.yookassa.exceptions import (
     YooKassaError,
     YooKassaRequestError,
 )
+from app.services.activation_notifications import send_activation_notification
 from app.services.payments import PaymentService, PaymentValidationError
 from app.services.remnawave_factory import build_subscription_service
 from app.webhooks.onlipay import notify_user
@@ -144,31 +142,11 @@ async def yookassa_webhook(
             f"Текущий баланс:\n{balance:.2f} ₽"
         )
         notification_markup = None
-        notification_parse_mode = None
         if result.order.purpose == OrderPurpose.wallet_topup:
             notification = (
                 f"{notification}\n\n"
                 "Пополнение кошелька завершено. Для продления VPN "
                 "подтвердите покупку тарифа отдельно."
-            )
-        elif (
-            result.subscription is not None
-            and result.subscription.subscription_url_encrypted
-            and request.app.state.subscription_cipher is not None
-        ):
-            url = request.app.state.subscription_cipher.decrypt(
-                result.subscription.subscription_url_encrypted
-            )
-            notification = (
-                f"{notification}\n\n"
-                f"{activation_text(result.subscription, url)}"
-            )
-            notification_markup = activation_keyboard()
-            notification_parse_mode = ParseMode.HTML
-        else:
-            notification = (
-                f"{notification}\n\n"
-                "✅ Подписка активирована. Ссылка ещё готовится."
             )
         background_tasks.add_task(
             notify_user,
@@ -176,8 +154,18 @@ async def yookassa_webhook(
             telegram_id,
             notification,
             notification_markup,
-            notification_parse_mode,
         )
+        if (
+            result.order.purpose != OrderPurpose.wallet_topup
+            and result.subscription is not None
+        ):
+            background_tasks.add_task(
+                send_activation_notification,
+                session_factory,
+                bot=request.app.state.bot,
+                subscription_id=result.subscription.id,
+                cipher=request.app.state.subscription_cipher,
+            )
     elif telegram_id is not None and not result.completed:
         balance_message = ""
         if result.balance_after is not None:

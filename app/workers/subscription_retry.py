@@ -7,8 +7,7 @@ from aiogram.enums import ParseMode
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from app.bot.keyboards.subscription import activation_keyboard
-from app.bot.texts.subscription import activation_text
+from app.bot.keyboards.tariffs import money
 from app.core.crypto import SubscriptionUrlCipher
 from app.database.models import (
     Order,
@@ -18,10 +17,12 @@ from app.database.models import (
     ProvisioningStatus,
     Subscription,
     SubscriptionStatus,
+    Tariff,
     User,
 )
 from app.integrations.onlipay.client import OnliPayClient
 from app.integrations.remnawave.client import RemnawaveClient
+from app.services.activation_notifications import send_activation_notification
 from app.services.audit import add_audit_log
 from app.services.payments import PaymentService, PaymentValidationError
 from app.services.remnawave import RemnawaveProvisioningService
@@ -60,6 +61,11 @@ async def retry_subscription_activations(
                     subscription_cipher,
                     internal_squad_uuid,
                 )
+            await _send_pending_activation_notifications(
+                session_factory,
+                bot,
+                subscription_cipher,
+            )
             await _disable_expired(session_factory, remnawave_client)
             await _send_expiry_notifications(session_factory, bot)
         except Exception:
@@ -93,6 +99,7 @@ async def _retry_paid_orders(
         )
     for provider_id in ids:
         try:
+            subscription_id = None
             async with session_factory() as session, session.begin():
                 payment = await session.scalar(
                     select(Payment).where(Payment.provider_payment_id == provider_id)
@@ -117,37 +124,14 @@ async def _retry_paid_orders(
                     webhook_received=False,
                 )
                 user = await session.get(User, order.user_id)
-                if (
-                    result.completed
-                    and result.subscription
-                    and result.subscription.subscription_url_encrypted
-                    and user
-                ):
-                    add_audit_log(
-                        session,
-                        action="subscription_url_sent",
-                        entity_type="subscription",
-                        entity_id=result.subscription.id,
-                        actor_user_id=user.id,
-                        actor_telegram_id=user.telegram_id,
-                    )
-            if result.completed and user:
-                url = None
-                if (
-                    cipher
-                    and result.subscription
-                    and result.subscription.subscription_url_encrypted
-                ):
-                    url = cipher.decrypt(result.subscription.subscription_url_encrypted)
-                await bot.send_message(
-                    user.telegram_id,
-                    (
-                        activation_text(result.subscription, url)
-                        if url and result.subscription
-                        else "✅ Активация завершена. Ссылка ещё готовится."
-                    ),
-                    reply_markup=activation_keyboard() if url else None,
-                    parse_mode=ParseMode.HTML if url else None,
+                if result.completed and result.subscription and user:
+                    subscription_id = result.subscription.id
+            if subscription_id is not None:
+                await send_activation_notification(
+                    session_factory,
+                    bot=bot,
+                    subscription_id=subscription_id,
+                    cipher=cipher,
                 )
             elif not result.completed:
                 for admin_id in admin_ids:
@@ -156,6 +140,11 @@ async def _retry_paid_orders(
                     )
         except PaymentValidationError as exc:
             logger.warning("Paid order retry rejected: %s", exc.reason)
+        except Exception:
+            logger.exception(
+                "Could not send activation notification for payment %s",
+                provider_id,
+            )
 
 
 async def _send_expiry_notifications(
@@ -164,6 +153,14 @@ async def _send_expiry_notifications(
 ) -> None:
     now = datetime.now(UTC)
     async with session_factory() as session:
+        renewal = (
+            await session.execute(
+                select(Tariff.price, Tariff.currency, Tariff.duration_days)
+                .where(Tariff.is_active.is_(True))
+                .order_by(Tariff.sort_order, Tariff.id)
+                .limit(1)
+            )
+        ).first()
         ids = list(
             await session.scalars(
                 select(Subscription.id)
@@ -179,6 +176,15 @@ async def _send_expiry_notifications(
                 .limit(100)
             )
         )
+    renewal_offer = (
+        (
+            "\n\nСтоимость продления: "
+            f"<b>{money(renewal.price, renewal.currency)} "
+            f"за {renewal.duration_days} дней</b>"
+        )
+        if renewal is not None
+        else ""
+    )
     for item_id in ids:
         async with session_factory() as session, session.begin():
             item = await session.scalar(
@@ -196,24 +202,22 @@ async def _send_expiry_notifications(
                 field = "expired_notice_at"
                 text = (
                     "⚫ <b>Подписка закончилась</b>\n\n"
-                    "VPN-доступ отключён после окончания оплаченного срока.\n\n"
-                    "Продление: <b>99 ₽ за 30 дней</b>"
+                    "VPN-доступ отключён после окончания оплаченного срока."
+                    f"{renewal_offer}"
                 )
             elif item.expires_at <= current + timedelta(days=1):
                 field = "expiry_notice_1d_at"
                 text = (
                     "⚠️ <b>Подписка закончится через 1 день</b>\n\n"
                     "Продлите BlazeVPN заранее, чтобы подключение не "
-                    "прерывалось.\n\n"
-                    "Стоимость продления: <b>99 ₽ за 30 дней</b>"
+                    f"прерывалось.{renewal_offer}"
                 )
             else:
                 field = "expiry_notice_3d_at"
                 text = (
                     "⚠️ <b>Подписка закончится через 3 дня</b>\n\n"
                     "Продлите BlazeVPN заранее, чтобы подключение не "
-                    "прерывалось.\n\n"
-                    "Стоимость продления: <b>99 ₽ за 30 дней</b>"
+                    f"прерывалось.{renewal_offer}"
                 )
             if getattr(item, field) is not None:
                 continue
@@ -255,6 +259,7 @@ async def _retry_subscriptions(
             )
         )
     for item_id in ids:
+        activated = False
         async with session_factory() as session, session.begin():
             item = await session.scalar(
                 select(Subscription)
@@ -270,40 +275,65 @@ async def _retry_subscriptions(
                 session, client, cipher, squad
             ).provision(item, user, source=item.source_type, order_id=item.order_id)
             attempts = item.activation_attempts
-            encrypted_url = item.subscription_url_encrypted
             if result.status == SubscriptionStatus.active:
+                activated = True
                 if item.order_id is not None:
                     order = await session.get(Order, item.order_id)
                     if order is not None and order.status == OrderStatus.processing:
                         order.status = OrderStatus.completed
                         order.completed_at = datetime.now(UTC)
                         order.failure_reason = None
-                if encrypted_url:
-                    add_audit_log(
-                        session,
-                        action="subscription_url_sent",
-                        entity_type="subscription",
-                        entity_id=item.id,
-                        actor_user_id=user.id,
-                        actor_telegram_id=user.telegram_id,
-                    )
-        if result.status == SubscriptionStatus.active:
-            url = cipher.decrypt(encrypted_url) if encrypted_url else None
-            await bot.send_message(
-                user.telegram_id,
-                (
-                    activation_text(item, url)
-                    if url
-                    else "✅ VPN-доступ активирован. Ссылка ещё готовится."
-                ),
-                reply_markup=activation_keyboard() if url else None,
-                parse_mode=ParseMode.HTML if url else None,
-            )
+        if activated:
+            try:
+                await send_activation_notification(
+                    session_factory,
+                    bot=bot,
+                    subscription_id=item_id,
+                    cipher=cipher,
+                )
+            except Exception:
+                logger.exception(
+                    "Could not send activation notification for subscription %s",
+                    item_id,
+                )
         elif attempts >= 5:
             for admin_id in admin_ids:
                 await bot.send_message(
                     admin_id, f"⚠️ Исчерпаны попытки активации {str(item_id)[:8]}."
                 )
+
+
+async def _send_pending_activation_notifications(
+    session_factory: async_sessionmaker[AsyncSession],
+    bot: Bot,
+    cipher: SubscriptionUrlCipher | None,
+) -> None:
+    async with session_factory() as session:
+        ids = list(
+            await session.scalars(
+                select(Subscription.id)
+                .where(
+                    Subscription.status == SubscriptionStatus.active,
+                    Subscription.provisioning_status == ProvisioningStatus.active,
+                    Subscription.activation_notified_at.is_(None),
+                )
+                .limit(100)
+            )
+        )
+    for item_id in ids:
+        try:
+            await send_activation_notification(
+                session_factory,
+                bot=bot,
+                subscription_id=item_id,
+                cipher=cipher,
+            )
+        except Exception:
+            logger.exception(
+                "Activation notification delivery failed for subscription %s; "
+                "it remains retryable",
+                item_id,
+            )
 
 
 async def _disable_expired(

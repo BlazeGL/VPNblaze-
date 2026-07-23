@@ -55,8 +55,11 @@ https://ваш-домен/api/webhooks/yookassa
 ```bash
 docker compose run --rm migrate alembic upgrade head
 docker compose run --rm migrate alembic current
-docker compose run --rm migrate alembic downgrade -1
 ```
+
+Автоматические downgrade отключены: они могли удалить пользовательские
+таблицы и историю. Перед обновлением используйте резервную копию PostgreSQL.
+Команда `docker compose up -d --build` применяет только upgrade-миграции.
 
 ## Проверки
 

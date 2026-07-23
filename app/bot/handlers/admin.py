@@ -508,7 +508,7 @@ async def positive_int(
 @router.message(TariffForm.duration)
 async def form_duration(message: Message, state: FSMContext) -> None:
     await positive_int(
-        message, state, "duration_days", TariffForm.price, "Цена (например 199.00):"
+        message, state, "duration_days", TariffForm.price, "Цена (например 100.00):"
     )
 
 

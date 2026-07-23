@@ -3,7 +3,6 @@ from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
 from aiogram import F, Router
-from aiogram.enums import ParseMode
 from aiogram.filters import Command, CommandObject
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
@@ -17,8 +16,6 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.bot.filters import AdminFilter
-from app.bot.keyboards.subscription import activation_keyboard
-from app.bot.texts.subscription import activation_text
 from app.core.crypto import SubscriptionUrlCipher, mask_subscription_url
 from app.database.models import (
     ProvisioningStatus,
@@ -38,6 +35,7 @@ from app.integrations.remnawave.exceptions import (
     RemnawaveError,
 )
 from app.integrations.remnawave.schemas import CreateUserRequest, UpdateUserRequest
+from app.services.activation_notifications import send_activation_notification
 from app.services.audit import add_audit_log
 from app.services.remnawave import RemnawaveProvisioningService
 from app.services.remnawave_sync import RemnawaveSyncService
@@ -527,6 +525,7 @@ async def grant_confirm(
         else:
             sub.expires_at = base + timedelta(days=data["days"])
             sub.source_type = SubscriptionSource.admin
+            sub.activation_notified_at = None
         sub.traffic_limit_gb = data["traffic"] or None
         sub.is_unlimited_traffic = data["traffic"] == 0
         sub.device_limit = data["devices"]
@@ -548,16 +547,14 @@ async def grant_confirm(
             actor_telegram_id=message.from_user.id if message.from_user else None,
             details={"target_telegram_id": user.telegram_id, "days": data["days"]},
         )
-        encrypted = sub.subscription_url_encrypted
-        target = user.telegram_id
+        subscription_id = sub.id
     await state.clear()
-    if result and result.status == SubscriptionStatus.active and encrypted:
-        url = subscription_cipher.decrypt(encrypted)  # type: ignore[union-attr]
-        await message.bot.send_message(
-            target,
-            activation_text(sub, url),
-            reply_markup=activation_keyboard(),
-            parse_mode=ParseMode.HTML,
+    if result and result.status == SubscriptionStatus.active:
+        await send_activation_notification(
+            session_factory,
+            bot=message.bot,
+            subscription_id=subscription_id,
+            cipher=subscription_cipher,
         )
         await message.answer("VPN успешно выдан.")
     else:

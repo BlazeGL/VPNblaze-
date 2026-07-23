@@ -30,7 +30,11 @@ from app.bot.texts.start import (
     USER_AGREEMENT_TEXT,
 )
 from app.core.config import Settings
-from app.database.models import Subscription, TrialActivation
+from app.database.models import (
+    Subscription,
+    SubscriptionSource,
+    TrialActivation,
+)
 from app.database.repositories import UserRepository
 from app.services.referrals import ReferralService
 
@@ -133,7 +137,7 @@ async def show_connection_menu(
         trial_activation = (
             await session.scalar(
                 select(TrialActivation.id).where(
-                    TrialActivation.user_id == user.id
+                    TrialActivation.telegram_id == user.telegram_id
                 )
             )
             if user is not None
@@ -153,6 +157,10 @@ async def show_connection_menu(
                     and not user.trial_disabled
                     and not user.is_blocked
                     and trial_activation is None
+                    and (
+                        subscription is None
+                        or subscription.source_type != SubscriptionSource.paid
+                    )
                 ),
                 has_subscription=subscription is not None,
             ),
