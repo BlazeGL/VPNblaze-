@@ -7,6 +7,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database.models import (
+    BalanceTransactionType,
     Order,
     OrderStatus,
     Payment,
@@ -16,13 +17,14 @@ from app.database.models import (
     Tariff,
     User,
 )
-from app.integrations.onlipay.client import OnliPayClient
-from app.integrations.onlipay.schemas import (
+from app.integrations.payments import (
     CreatePaymentCommand,
     NormalizedPaymentStatus,
+    PaymentProviderClient,
     PaymentStatusResult,
 )
 from app.services.audit import add_audit_log, sanitize_details
+from app.services.balance import BalanceService
 from app.services.promos import PromoService, PromoValidationError
 from app.services.subscriptions import SubscriptionService
 
@@ -41,6 +43,7 @@ class PaymentProcessingResult:
     payment: Payment
     subscription: Subscription | None = None
     failure_reason: str | None = None
+    balance_after: Decimal | None = None
 
 
 PROVIDER_TO_DB_STATUS = {
@@ -60,14 +63,16 @@ class PaymentService:
     def __init__(
         self,
         session: AsyncSession,
-        client: OnliPayClient,
+        client: PaymentProviderClient,
         *,
         public_base_url: str | None = None,
+        return_url: str | None = None,
         subscription_service: SubscriptionService | None = None,
     ) -> None:
         self.session = session
         self.client = client
         self.public_base_url = public_base_url.rstrip("/") if public_base_url else None
+        self.return_url = return_url or self.public_base_url
         self.subscription_service = subscription_service or SubscriptionService(session)
 
     async def get_active_for_order(self, order_id: uuid.UUID) -> Payment | None:
@@ -136,11 +141,15 @@ class PaymentService:
             )
             or 0
         ) + 1
+        provider_name = self.client.provider_name
         idempotency_key = str(
-            uuid.uuid5(uuid.NAMESPACE_URL, f"onlipay:{order.id}:{attempt_number}")
+            uuid.uuid5(
+                uuid.NAMESPACE_URL,
+                f"{provider_name}:{order.id}:{attempt_number}",
+            )
         )
         webhook_url = (
-            f"{self.public_base_url}/api/webhooks/onlipay"
+            f"{self.public_base_url}/api/webhooks/{provider_name}"
             if self.public_base_url
             else None
         )
@@ -150,7 +159,7 @@ class PaymentService:
                 amount=order.final_amount,
                 currency=order.currency_snapshot,
                 idempotency_key=idempotency_key,
-                return_url=self.public_base_url,
+                return_url=self.return_url,
                 webhook_url=webhook_url,
             )
         )
@@ -163,7 +172,7 @@ class PaymentService:
             raise PaymentValidationError("invalid_provider_status")
         payment = Payment(
             order_id=order.id,
-            provider="onlipay",
+            provider=provider_name,
             provider_payment_id=created.provider_payment_id,
             status=PROVIDER_TO_DB_STATUS[created.status],
             amount=order.final_amount,
@@ -344,6 +353,18 @@ class PaymentService:
         user = await self.session.get(User, order.user_id)
         if user is None:
             raise PaymentValidationError("user_not_found")
+        topup = (
+            await BalanceService(self.session).credit(
+                user.id,
+                amount=payment.amount,
+                transaction_type=BalanceTransactionType.topup,
+                idempotency_key=f"payment:{payment.id}",
+                reference_type="payment",
+                reference_id=str(payment.id),
+            )
+            if user.balance is not None
+            else None
+        )
         subscription = await self.subscription_service.extend_from_paid_order(
             user, order, now=moment
         )
@@ -367,6 +388,7 @@ class PaymentService:
                 payment,
                 subscription,
                 failure,
+                topup.transaction.balance_after if topup else None,
             )
 
         order.status = OrderStatus.completed
@@ -388,5 +410,12 @@ class PaymentService:
         )
         await self.session.flush()
         return PaymentProcessingResult(
-            True, False, order, payment, subscription=subscription
+            True,
+            False,
+            order,
+            payment,
+            subscription=subscription,
+            balance_after=(
+                topup.transaction.balance_after if topup else None
+            ),
         )

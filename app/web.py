@@ -13,7 +13,9 @@ from app.database.session import create_engine_and_session
 from app.integrations.onlipay.client import OnliPayClient
 from app.integrations.onlipay.signature import UnavailableWebhookVerifier
 from app.integrations.remnawave.client import RemnawaveClient
+from app.integrations.yookassa.client import YooKassaClient
 from app.webhooks.onlipay import router as onlipay_webhook_router
+from app.webhooks.yookassa import router as yookassa_webhook_router
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +33,17 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.session_factory = session_factory
     app.state.onlipay_client = OnliPayClient()
     app.state.onlipay_webhook_verifier = UnavailableWebhookVerifier()
+    app.state.yookassa_client = YooKassaClient(
+        settings.yookassa_shop_id,
+        settings.yookassa_secret_key,
+        base_url=settings.yookassa_api_url,
+        default_return_url=(
+            settings.yookassa_return_url
+            or settings.public_base_url
+            or "https://t.me"
+        ),
+        timeout=settings.yookassa_request_timeout,
+    )
     app.state.remnawave_client = None
     app.state.subscription_cipher = None
     if not settings.remnawave_missing_settings:
@@ -59,8 +72,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         await bot.session.close()
         if app.state.remnawave_client is not None:
             await app.state.remnawave_client.aclose()
+        await app.state.yookassa_client.aclose()
         await engine.dispose()
 
 
 app = FastAPI(title="VPN bot webhooks", lifespan=lifespan)
 app.include_router(onlipay_webhook_router)
+app.include_router(yookassa_webhook_router)

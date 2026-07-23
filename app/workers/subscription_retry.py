@@ -3,9 +3,12 @@ import logging
 from datetime import UTC, datetime
 
 from aiogram import Bot
+from aiogram.enums import ParseMode
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from app.bot.keyboards.subscription import activation_keyboard
+from app.bot.texts.subscription import activation_text
 from app.core.crypto import SubscriptionUrlCipher
 from app.database.models import (
     Order,
@@ -137,8 +140,13 @@ async def _retry_paid_orders(
                     url = cipher.decrypt(result.subscription.subscription_url_encrypted)
                 await bot.send_message(
                     user.telegram_id,
-                    "✅ Активация завершена."
-                    + (f"\n\nВаша индивидуальная ссылка:\n\n{url}" if url else ""),
+                    (
+                        activation_text(result.subscription, url)
+                        if url and result.subscription
+                        else "✅ Активация завершена. Ссылка ещё готовится."
+                    ),
+                    reply_markup=activation_keyboard() if url else None,
+                    parse_mode=ParseMode.HTML if url else None,
                 )
             elif not result.completed:
                 for admin_id in admin_ids:
@@ -208,8 +216,13 @@ async def _retry_subscriptions(
             url = cipher.decrypt(encrypted_url) if encrypted_url else None
             await bot.send_message(
                 user.telegram_id,
-                "✅ VPN-доступ активирован."
-                + (f"\n\nВаша индивидуальная ссылка:\n\n{url}" if url else ""),
+                (
+                    activation_text(item, url)
+                    if url
+                    else "✅ VPN-доступ активирован. Ссылка ещё готовится."
+                ),
+                reply_markup=activation_keyboard() if url else None,
+                parse_mode=ParseMode.HTML if url else None,
             )
         elif attempts >= 5:
             for admin_id in admin_ids:

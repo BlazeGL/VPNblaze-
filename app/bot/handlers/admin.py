@@ -34,6 +34,7 @@ from app.database.models import (
 )
 from app.database.repositories import TariffRepository, UserRepository
 from app.services.audit import add_audit_log
+from app.services.referrals import ReferralService
 from app.services.trials import TrialService
 
 router = Router(name=__name__)
@@ -97,6 +98,31 @@ async def set_trial_access(
 @router.message(Command("admin"), AdminFilter())
 async def open_admin(message: Message) -> None:
     await message.answer("Панель администратора", reply_markup=admin_menu())
+
+
+@router.message(Command("ref_stats"), AdminFilter())
+async def referral_stats(
+    message: Message,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    async with session_factory() as session:
+        stats = await ReferralService(session).global_stats()
+    leaders = "\n".join(
+        (
+            f"{index}. "
+            f"{('@' + user.username) if user.username else user.telegram_id}"
+            f" — {count}"
+        )
+        for index, (user, count) in enumerate(stats.top_referrers, start=1)
+    )
+    if not leaders:
+        leaders = "Пока нет приглашений."
+    await message.answer(
+        "👥 Реферальная статистика\n\n"
+        f"Всего рефералов: {stats.total_referrals}\n"
+        f"Начислено: {stats.total_awarded:.2f} ₽\n\n"
+        f"ТОП пригласивших:\n{leaders}"
+    )
 
 
 @router.message(Command("admin"))

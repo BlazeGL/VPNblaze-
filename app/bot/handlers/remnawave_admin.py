@@ -3,6 +3,7 @@ from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
 from aiogram import F, Router
+from aiogram.enums import ParseMode
 from aiogram.filters import Command, CommandObject
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
@@ -16,6 +17,8 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.bot.filters import AdminFilter
+from app.bot.keyboards.subscription import activation_keyboard
+from app.bot.texts.subscription import activation_text
 from app.core.crypto import SubscriptionUrlCipher, mask_subscription_url
 from app.database.models import (
     ProvisioningStatus,
@@ -551,7 +554,10 @@ async def grant_confirm(
     if result and result.status == SubscriptionStatus.active and encrypted:
         url = subscription_cipher.decrypt(encrypted)  # type: ignore[union-attr]
         await message.bot.send_message(
-            target, f"VPN-доступ выдан.\n\nВаша индивидуальная ссылка:\n\n{url}"
+            target,
+            activation_text(sub, url),
+            reply_markup=activation_keyboard(),
+            parse_mode=ParseMode.HTML,
         )
         await message.answer("VPN успешно выдан.")
     else:

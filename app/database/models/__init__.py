@@ -1,4 +1,8 @@
 from app.database.models.audit import AuditLog
+from app.database.models.balance import (
+    BalanceTransaction,
+    BalanceTransactionType,
+)
 from app.database.models.order import Order, OrderStatus
 from app.database.models.payment import Payment, PaymentStatus
 from app.database.models.promo import (
@@ -23,6 +27,8 @@ from app.database.models.user import User
 
 __all__ = [
     "AuditLog",
+    "BalanceTransaction",
+    "BalanceTransactionType",
     "Order",
     "OrderStatus",
     "Payment",

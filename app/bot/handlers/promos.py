@@ -3,12 +3,18 @@ import uuid
 from aiogram import F, Router
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-from aiogram.types import CallbackQuery, Message
+from aiogram.types import (
+    CallbackQuery,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    Message,
+)
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.bot.callbacks import PromoCallback
 from app.bot.keyboards.tariffs import build_order, money
+from app.core.config import Settings
 from app.database.models import Order
 from app.database.repositories import OrderRepository, UserRepository
 from app.services.promos import PromoService, PromoValidationError
@@ -33,12 +39,32 @@ ERROR_MESSAGES = {
 }
 
 
+def promo_input_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="❌ Отменить",
+                    callback_data="promo_input_cancel",
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="⬅️ Главное меню",
+                    callback_data="promo_input_main",
+                )
+            ],
+        ]
+    )
+
+
 @router.callback_query(F.data == "promo_enter")
 async def enter_promo_from_menu(
     callback: CallbackQuery,
     state: FSMContext,
     session_factory: async_sessionmaker[AsyncSession],
 ) -> None:
+    await state.clear()
     async with session_factory() as session:
         user = await UserRepository(session).get_by_telegram_id(callback.from_user.id)
         order = (
@@ -57,7 +83,38 @@ async def enter_promo_from_menu(
     await state.update_data(order_id=str(order.id))
     await callback.answer()
     if callback.message:
-        await callback.message.answer("Введите промокод:")
+        await callback.message.answer(
+            "🎟 <b>Активация промокода</b>\n\n"
+            "Отправьте промокод следующим сообщением.",
+            reply_markup=promo_input_keyboard(),
+            parse_mode="HTML",
+        )
+
+
+@router.callback_query(F.data == "promo_input_cancel")
+async def cancel_promo_input(callback: CallbackQuery, state: FSMContext) -> None:
+    await state.clear()
+    await callback.answer("Ввод промокода отменён.")
+    if callback.message:
+        await callback.message.answer("Ввод промокода отменён.")
+
+
+@router.callback_query(F.data == "promo_input_main")
+async def cancel_promo_to_main(
+    callback: CallbackQuery,
+    state: FSMContext,
+    settings: Settings,
+) -> None:
+    from app.bot.handlers.start import send_welcome
+
+    await state.clear()
+    await callback.answer()
+    if callback.message:
+        await send_welcome(
+            callback.message,
+            settings.user_agreement_url,
+            settings.support_url,
+        )
 
 
 @router.callback_query(PromoCallback.filter(F.action == "apply"))
@@ -118,17 +175,21 @@ async def apply_promo(
     await state.clear()
     promo = application.promo_code
     if application.bonus_days:
-        text = f"Промокод применён: +{application.bonus_days} дней"
+        description = f"+{application.bonus_days} дней к подписке"
     else:
         label = (
             f"-{promo.discount_value.normalize()}%"
             if promo.discount_type.value == "percent"
             else f"-{money(promo.discount_value)}"
         )
-        text = (
-            f"Промокод применён: {label}\n"
+        description = (
+            f"{label}\n"
             f"Старая цена: {money(application.original_amount)}\n"
             f"Скидка: {money(application.discount_amount)}\n"
             f"К оплате: {money(application.final_amount)}"
         )
-    await message.answer(text, reply_markup=build_order(order))
+    await message.answer(
+        "✅ <b>Промокод применён</b>\n\n" + description,
+        reply_markup=build_order(order),
+        parse_mode="HTML",
+    )

@@ -21,6 +21,8 @@ class OnliPayTransport(Protocol):
 class OnliPayClient:
     """Fail-closed facade until OnliPay supplies its merchant API documentation."""
 
+    provider_name = "onlipay"
+
     def __init__(self, transport: OnliPayTransport | None = None) -> None:
         self.transport = transport
 

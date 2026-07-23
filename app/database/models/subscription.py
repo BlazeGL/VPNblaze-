@@ -3,6 +3,7 @@ from datetime import datetime
 from enum import StrEnum
 
 from sqlalchemy import (
+    BigInteger,
     Boolean,
     CheckConstraint,
     DateTime,
@@ -127,7 +128,10 @@ class Subscription(Base):
         server_default=ProvisioningStatus.not_started.value,
         index=True,
     )
-    used_traffic_bytes: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    used_traffic_bytes: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    remnawave_traffic_limit_bytes: Mapped[int | None] = mapped_column(
+        BigInteger, nullable=True
+    )
     connected_devices: Mapped[int | None] = mapped_column(Integer, nullable=True)
     next_retry_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True, index=True

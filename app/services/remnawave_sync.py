@@ -62,6 +62,7 @@ class RemnawaveSyncService:
             subscription.remnawave_last_sync_at = datetime.now(UTC)
             subscription.remnawave_sync_error = None
             subscription.used_traffic_bytes = remote.user_traffic.used_traffic_bytes
+            subscription.remnawave_traffic_limit_bytes = remote.traffic_limit_bytes
             subscription.provisioning_status = ProvisioningStatus.active
         except Exception as exc:
             subscription.remnawave_sync_error = str(exc)[:1000]

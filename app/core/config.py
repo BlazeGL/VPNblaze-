@@ -30,6 +30,11 @@ class Settings(BaseSettings):
     onlipay_merchant_id: str | None = None
     onlipay_webhook_secret: str | None = None
     public_base_url: str | None = None
+    yookassa_shop_id: str | None = None
+    yookassa_secret_key: str | None = None
+    yookassa_api_url: str = "https://api.yookassa.ru/v3"
+    yookassa_return_url: str | None = None
+    yookassa_request_timeout: float = Field(default=15, gt=0)
     remnawave_base_url: str | None = None
     remnawave_api_token: str | None = None
     remnawave_internal_squad_uuid: str | None = None
@@ -38,6 +43,12 @@ class Settings(BaseSettings):
     remnawave_max_retries: int = Field(default=3, ge=0, le=10)
     remnawave_retry_base_delay: float = Field(default=1, ge=0)
     subscription_encryption_key: str | None = None
+    android_app_url: str | None = None
+    ios_app_url: str | None = None
+    windows_app_url: str | None = None
+    linux_app_url: str | None = None
+    user_agreement_url: str | None = None
+    support_url: str = "https://t.me/Blaze_GL"
 
     @field_validator("admin_ids", mode="before")
     @classmethod
@@ -53,13 +64,61 @@ class Settings(BaseSettings):
         "onlipay_merchant_id",
         "onlipay_webhook_secret",
         "public_base_url",
+        "yookassa_shop_id",
+        "yookassa_secret_key",
+        "yookassa_return_url",
         "remnawave_api_token",
         "subscription_encryption_key",
+        "android_app_url",
+        "ios_app_url",
+        "windows_app_url",
+        "linux_app_url",
         mode="before",
     )
     @classmethod
     def empty_string_to_none(cls, value: object) -> object:
         return None if value == "" else value
+
+    @field_validator("user_agreement_url", mode="before")
+    @classmethod
+    def validate_user_agreement_url(cls, value: object) -> str | None:
+        if value is None:
+            return None
+        candidate = str(value)
+        parsed = urlsplit(candidate)
+        if (
+            not candidate
+            or any(character.isspace() for character in candidate)
+            or parsed.scheme != "https"
+            or not parsed.netloc
+        ):
+            return None
+        return candidate
+
+    @field_validator("support_url", mode="before")
+    @classmethod
+    def validate_support_url(cls, value: object) -> str:
+        candidate = str(value or "https://t.me/Blaze_GL").strip()
+        parsed = urlsplit(candidate)
+        if (
+            not candidate
+            or any(character.isspace() for character in candidate)
+            or parsed.scheme != "https"
+            or not parsed.netloc
+        ):
+            raise ValueError("SUPPORT_URL must be an HTTPS URL")
+        return candidate
+
+    @field_validator("yookassa_api_url", "yookassa_return_url", mode="before")
+    @classmethod
+    def validate_yookassa_url(cls, value: object) -> object:
+        if value is None or (isinstance(value, str) and not value.strip()):
+            return None
+        candidate = str(value).strip().rstrip("/")
+        parsed = urlsplit(candidate)
+        if parsed.scheme != "https" or not parsed.netloc:
+            raise ValueError("YooKassa URLs must use HTTPS")
+        return candidate
 
     @field_validator("remnawave_base_url", mode="before")
     @classmethod
@@ -100,6 +159,14 @@ class Settings(BaseSettings):
             "REMNAWAVE_API_TOKEN": self.remnawave_api_token,
             "REMNAWAVE_INTERNAL_SQUAD_UUID": self.remnawave_internal_squad_uuid,
             "SUBSCRIPTION_ENCRYPTION_KEY": self.subscription_encryption_key,
+        }
+        return [name for name, value in values.items() if not value]
+
+    @property
+    def yookassa_missing_settings(self) -> list[str]:
+        values = {
+            "YOOKASSA_SHOP_ID": self.yookassa_shop_id,
+            "YOOKASSA_SECRET_KEY": self.yookassa_secret_key,
         }
         return [name for name, value in values.items() if not value]
 

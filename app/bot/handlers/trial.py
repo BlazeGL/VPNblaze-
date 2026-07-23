@@ -1,30 +1,42 @@
-from datetime import UTC, datetime
-from math import ceil
+import logging
+from datetime import UTC
 
 from aiogram import F, Router
-from aiogram.enums import ChatType
+from aiogram.enums import ChatType, ParseMode
 from aiogram.types import CallbackQuery
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from app.bot.keyboards.subscription import subscription_menu
+from app.bot.keyboards.start import (
+    ACTIVATE_TRIAL_CALLBACK,
+    MAIN_MENU_CALLBACK,
+    MY_SUBSCRIPTION_CALLBACK,
+    build_connection_menu,
+)
+from app.bot.keyboards.subscription import activation_keyboard, subscription_menu
+from app.bot.rendering import edit_text_or_caption
+from app.bot.texts.account import account_text, empty_account_text
+from app.bot.texts.subscription import activation_text
 from app.core.crypto import SubscriptionUrlCipher
 from app.database.models import Subscription, Tariff, User
 from app.integrations.remnawave.client import RemnawaveClient
 from app.services.audit import add_audit_log
+from app.services.balance import InsufficientBalanceError
+from app.services.billing import BillingService
 from app.services.remnawave_factory import build_subscription_service
 from app.services.remnawave_sync import RemnawaveSyncService
 from app.services.trials import TrialService
 
 router = Router(name=__name__)
+logger = logging.getLogger(__name__)
 
 
 def format_utc(value: object) -> str:
     return value.astimezone(UTC).strftime("%d.%m.%Y %H:%M")  # type: ignore[union-attr]
 
 
-@router.callback_query(F.data == "activate_trial")
+@router.callback_query(F.data == ACTIVATE_TRIAL_CALLBACK)
 async def activate_trial(
     callback: CallbackQuery,
     session_factory: async_sessionmaker[AsyncSession],
@@ -73,16 +85,19 @@ async def activate_trial(
             url = subscription_cipher.decrypt(
                 result.subscription.subscription_url_encrypted
             )
-            await callback.message.answer(
-                "🎁 Пробный период активирован\n\n"
-                f"Доступ действует до: {format_utc(result.activation.expires_at)}\n\n"
-                f"Ваша индивидуальная ссылка:\n\n{url}"
+            await edit_text_or_caption(
+                callback.message,
+                activation_text(result.subscription, url),
+                activation_keyboard(),
+                parse_mode=ParseMode.HTML,
             )
         else:
-            await callback.message.answer(
+            await edit_text_or_caption(
+                callback.message,
                 "🎁 Пробный период зарегистрирован\n\n"
                 f"Доступ действует до: {format_utc(result.activation.expires_at)}\n\n"
-                "Доступ готовится. Повторно активировать trial не нужно."
+                "Доступ готовится. Повторно активировать trial не нужно.",
+                activation_keyboard(),
             )
             technical_reason = (
                 result.subscription.last_activation_error
@@ -102,12 +117,23 @@ async def activate_trial(
         "paid_subscription_exists": "У вас уже есть действующая платная подписка.",
         "user_not_found": "Сначала нажмите /start.",
     }
-    await callback.message.answer(
-        messages.get(result.reason, "Пробный период недоступен.")
+    await edit_text_or_caption(
+        callback.message,
+        messages.get(result.reason, "Пробный период недоступен."),
+        build_connection_menu(trial_available=False, has_subscription=False),
     )
 
 
-@router.callback_query(F.data.in_({"my_subscription", "subscription_refresh"}))
+@router.callback_query(
+    F.data.in_(
+        {
+            MY_SUBSCRIPTION_CALLBACK,
+            "my_subscription_from_key",
+            "subscription_refresh",
+            "back_to_subscription",
+        }
+    )
+)
 async def show_subscription(
     callback: CallbackQuery,
     session_factory: async_sessionmaker[AsyncSession],
@@ -119,6 +145,7 @@ async def show_subscription(
             "Для безопасности откройте бота в личных сообщениях.", show_alert=True
         )
         return
+    sync_unavailable = False
     async with session_factory() as session, session.begin():
         user = await session.scalar(
             select(User).where(User.telegram_id == callback.from_user.id)
@@ -142,7 +169,11 @@ async def show_subscription(
                     session, remnawave_client, subscription_cipher
                 ).sync_one(subscription, user)
             except Exception:
-                pass
+                sync_unavailable = True
+                logger.exception(
+                    "Could not refresh subscription for Telegram user %s",
+                    callback.from_user.id,
+                )
         tariff = (
             await session.get(Tariff, subscription.tariff_id)
             if subscription and subscription.tariff_id
@@ -152,73 +183,76 @@ async def show_subscription(
     if callback.message is None:
         return
     if subscription is None:
-        await callback.message.answer("У вас пока нет зарегистрированной подписки.")
+        await edit_text_or_caption(
+            callback.message,
+            empty_account_text(user),
+            subscription_menu(
+                state="none",
+                trial_available=bool(
+                    user
+                    and not user.trial_used
+                    and not user.trial_disabled
+                    and not user.is_blocked
+                ),
+                has_key=False,
+                back_callback=MAIN_MENU_CALLBACK,
+            ),
+            parse_mode=ParseMode.HTML,
+        )
         return
-    seconds = (subscription.expires_at - datetime.now(UTC)).total_seconds()
-    days_left = max(0, ceil(seconds / 86400))
-    traffic = (
-        "Безлимит"
-        if subscription.is_unlimited_traffic
-        else f"{subscription.traffic_limit_gb or 0} ГБ"
+    text, state = account_text(
+        subscription,
+        tariff.name if tariff else None,
+        user=user,
+        sync_unavailable=(
+            sync_unavailable or bool(subscription.remnawave_sync_error)
+        ),
     )
-    used = (
-        f"{subscription.used_traffic_bytes / 1024**3:.2f} ГБ"
-        if subscription.used_traffic_bytes is not None
-        else "нет данных"
-    )
-    await callback.message.answer(
-        "Ваша подписка\n\n"
-        f"Статус: {subscription.status.value}\n"
-        f"Источник: {subscription.source_type.value}\n"
-        f"Начало: {format_utc(subscription.started_at)} UTC\n"
-        f"Окончание: {format_utc(subscription.expires_at)} UTC\n"
-        f"Осталось дней: {days_left}\n"
-        f"Тариф: {tariff.name if tariff else '—'}\n"
-        f"Лимит трафика: {traffic}\n"
-        f"Использовано: {used}\n"
-        f"Лимит устройств: {subscription.device_limit}\n"
-        f"Синхронизация Remnawave: {subscription.provisioning_status.value}",
-        reply_markup=subscription_menu(),
+    await edit_text_or_caption(
+        callback.message,
+        text,
+        subscription_menu(
+            state=state,
+            has_key=subscription.subscription_url_encrypted is not None,
+            back_callback=(
+                "back_to_key"
+                if callback.data == "my_subscription_from_key"
+                else MAIN_MENU_CALLBACK
+            )
+        ),
+        parse_mode=ParseMode.HTML,
     )
 
 
-@router.callback_query(F.data == "subscription_link")
-async def get_subscription_link(
+@router.callback_query(F.data == "balance_reactivate")
+async def reactivate_from_balance(
     callback: CallbackQuery,
     session_factory: async_sessionmaker[AsyncSession],
-    subscription_cipher: SubscriptionUrlCipher | None = None,
+    remnawave_client: RemnawaveClient | None = None,
 ) -> None:
-    if callback.message is None or callback.message.chat.type != ChatType.PRIVATE:
+    try:
+        async with session_factory() as session, session.begin():
+            user = await session.scalar(
+                select(User).where(
+                    User.telegram_id == callback.from_user.id
+                )
+            )
+            if user is None:
+                raise LookupError
+            await BillingService(
+                session, remnawave_client
+            ).reactivate(user.id)
+    except LookupError:
+        await callback.answer("Подписка не найдена.", show_alert=True)
+        return
+    except InsufficientBalanceError:
         await callback.answer(
-            "Для безопасности откройте бота в личных сообщениях.", show_alert=True
+            "Для активации нужно минимум 5 ₽ на балансе.",
+            show_alert=True,
         )
         return
-    async with session_factory() as session, session.begin():
-        user = await session.scalar(
-            select(User).where(User.telegram_id == callback.from_user.id)
+    await callback.answer("VPN снова активирован.", show_alert=True)
+    if callback.message:
+        await callback.message.answer(
+            "✅ VPN снова активирован. Суточное списание составит 5 ₽."
         )
-        subscription = (
-            await session.scalar(
-                select(Subscription).where(Subscription.user_id == user.id)
-            )
-            if user
-            else None
-        )
-        if user and subscription and subscription.subscription_url_encrypted:
-            add_audit_log(
-                session,
-                action="subscription_url_sent",
-                entity_type="subscription",
-                entity_id=subscription.id,
-                actor_user_id=user.id,
-                actor_telegram_id=user.telegram_id,
-            )
-    await callback.answer()
-    if not subscription or not subscription.subscription_url_encrypted:
-        await callback.message.answer("Ссылка ещё готовится. Попробуйте позже.")
-        return
-    if subscription_cipher is None:
-        await callback.message.answer("Ссылка временно недоступна.")
-        return
-    url = subscription_cipher.decrypt(subscription.subscription_url_encrypted)
-    await callback.message.answer(f"Ваша индивидуальная ссылка:\n\n{url}")

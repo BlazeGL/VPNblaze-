@@ -7,13 +7,16 @@ from aiogram.fsm.storage.redis import RedisStorage
 from redis.asyncio import Redis
 
 from app.bot.handlers import setup_routers
+from app.bot.services.command_menu import register_command_menu
 from app.core.config import get_settings
 from app.core.crypto import SubscriptionUrlCipher
 from app.core.logging import configure_logging
 from app.database.session import create_engine_and_session
-from app.integrations.onlipay.client import OnliPayClient
 from app.integrations.remnawave.client import RemnawaveClient
 from app.integrations.remnawave.exceptions import RemnawaveError
+from app.integrations.yookassa.client import YooKassaClient
+from app.integrations.yookassa.exceptions import YooKassaError
+from app.workers.billing import run_daily_billing
 from app.workers.subscription_retry import retry_subscription_activations
 
 logger = logging.getLogger(__name__)
@@ -25,7 +28,39 @@ async def main() -> None:
     engine, session_factory = create_engine_and_session(settings.database_url)
     storage = RedisStorage.from_url(settings.redis_url)
     redis_client = Redis.from_url(settings.redis_url, decode_responses=True)
-    onlipay_client = OnliPayClient()
+    bot = Bot(
+        token=settings.telegram_bot_token,
+        default=DefaultBotProperties(link_preview_is_disabled=True),
+    )
+    payment_return_url = settings.yookassa_return_url
+    if not payment_return_url:
+        try:
+            identity = await bot.get_me()
+            if identity.username:
+                payment_return_url = f"https://t.me/{identity.username}"
+        except Exception:
+            logger.exception(
+                "Could not resolve the bot username for payment return URL"
+            )
+    payment_return_url = payment_return_url or "https://t.me"
+    payment_client = YooKassaClient(
+        settings.yookassa_shop_id,
+        settings.yookassa_secret_key,
+        base_url=settings.yookassa_api_url,
+        default_return_url=payment_return_url,
+        timeout=settings.yookassa_request_timeout,
+    )
+    if settings.yookassa_missing_settings:
+        logger.error(
+            "YooKassa payments are disabled; missing settings: %s",
+            ", ".join(settings.yookassa_missing_settings),
+        )
+    else:
+        try:
+            await payment_client.check_api()
+            logger.info("YooKassa API authentication and availability check succeeded")
+        except YooKassaError as exc:
+            logger.error("YooKassa API check failed; bot will continue: %s", exc)
     remnawave_client: RemnawaveClient | None = None
     subscription_cipher: SubscriptionUrlCipher | None = None
     logger.info(
@@ -65,12 +100,13 @@ async def main() -> None:
             logger.info("Remnawave Internal Squad validation succeeded")
         except (RemnawaveError, ValueError) as exc:
             logger.error("Remnawave API is unavailable; bot will continue: %s", exc)
-    bot = Bot(
-        token=settings.telegram_bot_token,
-        default=DefaultBotProperties(link_preview_is_disabled=True),
-    )
     dispatcher = Dispatcher(storage=storage)
     dispatcher.include_router(setup_routers())
+    try:
+        await register_command_menu(bot, set(settings.admin_ids))
+        logger.info("Telegram command menus registered")
+    except Exception:
+        logger.exception("Could not register Telegram command menus")
     stop_retry_worker = asyncio.Event()
     retry_worker = asyncio.create_task(
         retry_subscription_activations(
@@ -83,18 +119,28 @@ async def main() -> None:
             internal_squad_uuid=settings.remnawave_internal_squad_uuid,
         )
     )
+    billing_worker = asyncio.create_task(
+        run_daily_billing(
+            session_factory=session_factory,
+            bot=bot,
+            stop_event=stop_retry_worker,
+            remnawave_client=remnawave_client,
+        )
+    )
     logger.info("Starting VPN bot in long polling mode")
     try:
         await dispatcher.start_polling(
             bot,
             session_factory=session_factory,
             admin_ids=set(settings.admin_ids),
-            onlipay_client=onlipay_client,
+            payment_client=payment_client,
+            payment_return_url=payment_return_url,
             public_base_url=settings.public_base_url,
             redis_client=redis_client,
             remnawave_client=remnawave_client,
             subscription_cipher=subscription_cipher,
             remnawave_internal_squad_uuid=settings.remnawave_internal_squad_uuid,
+            settings=settings,
         )
     except Exception:
         logger.exception("Bot stopped because of an unexpected error")
@@ -102,10 +148,11 @@ async def main() -> None:
     finally:
         logger.info("Shutting down bot resources")
         stop_retry_worker.set()
-        await retry_worker
+        await asyncio.gather(retry_worker, billing_worker)
         await bot.session.close()
         await storage.close()
         await redis_client.aclose()
+        await payment_client.aclose()
         if remnawave_client is not None:
             await remnawave_client.aclose()
         await engine.dispose()

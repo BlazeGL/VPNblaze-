@@ -329,6 +329,7 @@ class RemnawaveProvisioningService:
         subscription.remnawave_created_at = remote.created_at
         subscription.remnawave_internal_squad_uuid = str(squad_uuid)
         subscription.used_traffic_bytes = remote.user_traffic.used_traffic_bytes
+        subscription.remnawave_traffic_limit_bytes = remote.traffic_limit_bytes
         subscription.status = SubscriptionStatus.active
         subscription.provisioning_status = ProvisioningStatus.active
         subscription.last_activation_error = None

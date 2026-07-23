@@ -2,19 +2,27 @@ import logging
 import uuid
 
 from aiogram import F, Router
+from aiogram.enums import ChatType, ParseMode
 from aiogram.types import CallbackQuery
 from redis.asyncio import Redis
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.bot.callbacks import OrderCallback, TariffCallback
-from app.bot.keyboards import build_main_menu, build_payment
+from app.bot.keyboards import build_payment
+from app.bot.keyboards.start import (
+    BUY_SUBSCRIPTION_CALLBACK,
+    TARIFFS_CALLBACK,
+)
+from app.bot.keyboards.subscription import activation_keyboard
 from app.bot.keyboards.tariffs import (
     build_order,
     build_tariff_card,
     build_tariffs,
     money,
 )
+from app.bot.rendering import edit_text_or_caption
+from app.bot.texts.subscription import activation_text
 from app.core.crypto import SubscriptionUrlCipher
 from app.database.models import Payment
 from app.database.repositories import (
@@ -23,9 +31,9 @@ from app.database.repositories import (
     TariffRepository,
     UserRepository,
 )
-from app.integrations.onlipay.client import OnliPayClient
-from app.integrations.onlipay.exceptions import OnliPayError
 from app.integrations.remnawave.client import RemnawaveClient
+from app.integrations.yookassa.client import YooKassaClient
+from app.integrations.yookassa.exceptions import YooKassaError
 from app.services.payments import PaymentService, PaymentValidationError
 from app.services.remnawave_factory import build_subscription_service
 
@@ -37,7 +45,9 @@ def traffic(limit: int | None, unlimited: bool) -> str:
     return "Безлимит" if unlimited else f"{limit} ГБ"
 
 
-@router.callback_query(F.data.in_({"tariffs", "buy_vpn"}))
+@router.callback_query(
+    F.data.in_({TARIFFS_CALLBACK, BUY_SUBSCRIPTION_CALLBACK})
+)
 async def show_tariffs(
     callback: CallbackQuery, session_factory: async_sessionmaker[AsyncSession]
 ) -> None:
@@ -45,8 +55,19 @@ async def show_tariffs(
         tariffs = await TariffRepository(session).get_active()
     await callback.answer()
     if callback.message:
-        text = "Выберите тариф:" if tariffs else "Активных тарифов пока нет."
-        await callback.message.edit_text(text, reply_markup=build_tariffs(tariffs))
+        text = (
+            "Выберите тариф:"
+            if tariffs
+            else (
+                "Сейчас нет доступных тарифов. Попробуйте позже или "
+                "обратитесь в поддержку."
+            )
+        )
+        await edit_text_or_caption(
+            callback.message,
+            text,
+            build_tariffs(tariffs),
+        )
 
 
 @router.callback_query(TariffCallback.filter(F.action == "view"))
@@ -70,8 +91,10 @@ async def show_tariff(
     )
     await callback.answer()
     if callback.message:
-        await callback.message.edit_text(
-            text, reply_markup=build_tariff_card(tariff.id)
+        await edit_text_or_caption(
+            callback.message,
+            text,
+            build_tariff_card(tariff.id),
         )
 
 
@@ -105,7 +128,7 @@ async def buy_tariff(
     )
     await callback.answer()
     if callback.message:
-        await callback.message.edit_text(text, reply_markup=build_order(order))
+        await edit_text_or_caption(callback.message, text, build_order(order))
 
 
 @router.callback_query(OrderCallback.filter(F.action == "pay"))
@@ -113,7 +136,8 @@ async def create_payment(
     callback: CallbackQuery,
     callback_data: OrderCallback,
     session_factory: async_sessionmaker[AsyncSession],
-    onlipay_client: OnliPayClient,
+    payment_client: YooKassaClient,
+    payment_return_url: str | None,
     public_base_url: str | None,
 ) -> None:
     try:
@@ -124,11 +148,14 @@ async def create_payment(
             if user is None:
                 raise PaymentValidationError("order_not_found")
             payment = await PaymentService(
-                session, onlipay_client, public_base_url=public_base_url
+                session,
+                payment_client,
+                public_base_url=public_base_url,
+                return_url=payment_return_url,
             ).create_for_order(callback_data.order_id, user_id=user.id)
-    except OnliPayError:
+    except YooKassaError:
         await callback.answer(
-            "Оплата OnliPay пока недоступна: требуется официальный merchant-контракт.",
+            "ЮKassa временно недоступна. Попробуйте ещё раз позднее.",
             show_alert=True,
         )
         return
@@ -137,9 +164,10 @@ async def create_payment(
         return
     await callback.answer()
     if callback.message:
-        await callback.message.edit_text(
+        await edit_text_or_caption(
+            callback.message,
             "Платёж создан. Сумма и заказ проверены сервером.",
-            reply_markup=build_payment(payment),
+            build_payment(payment),
         )
 
 
@@ -148,7 +176,8 @@ async def check_payment(
     callback: CallbackQuery,
     callback_data: OrderCallback,
     session_factory: async_sessionmaker[AsyncSession],
-    onlipay_client: OnliPayClient,
+    payment_client: YooKassaClient,
+    payment_return_url: str | None,
     public_base_url: str | None,
     redis_client: Redis,
     admin_ids: set[int],
@@ -156,6 +185,11 @@ async def check_payment(
     subscription_cipher: SubscriptionUrlCipher | None = None,
     remnawave_internal_squad_uuid: str | None = None,
 ) -> None:
+    if callback.message is None or callback.message.chat.type != ChatType.PRIVATE:
+        await callback.answer(
+            "Для безопасности откройте бота в личных сообщениях.", show_alert=True
+        )
+        return
     cooldown_key = f"payment-check:{callback.from_user.id}:{callback_data.order_id}"
     if not await redis_client.set(cooldown_key, "1", ex=12, nx=True):
         await callback.answer(
@@ -181,8 +215,9 @@ async def check_payment(
                 raise PaymentValidationError("payment_not_found")
             result = await PaymentService(
                 session,
-                onlipay_client,
+                payment_client,
                 public_base_url=public_base_url,
+                return_url=payment_return_url,
                 subscription_service=build_subscription_service(
                     session,
                     remnawave_client,
@@ -193,9 +228,9 @@ async def check_payment(
     except (ValueError, PaymentValidationError):
         await callback.answer("Платёж не найден", show_alert=True)
         return
-    except OnliPayError:
+    except YooKassaError:
         await callback.answer(
-            "Проверка OnliPay недоступна до подключения merchant API.",
+            "Не удалось проверить платёж в ЮKassa. Попробуйте позднее.",
             show_alert=True,
         )
         return
@@ -204,7 +239,12 @@ async def check_payment(
     elif result.completed:
         await callback.answer("Оплата подтверждена", show_alert=True)
         if callback.message:
-            text = "✅ Оплата подтверждена. Подписка активирована."
+            balance = result.balance_after or result.payment.amount
+            await callback.message.answer(
+                "✅ Баланс пополнен\n\n"
+                f"Сумма:\n{result.payment.amount:.2f} ₽\n\n"
+                f"Текущий баланс:\n{balance:.2f} ₽"
+            )
             if (
                 result.subscription is not None
                 and result.subscription.subscription_url_encrypted
@@ -213,13 +253,27 @@ async def check_payment(
                 url = subscription_cipher.decrypt(
                     result.subscription.subscription_url_encrypted
                 )
-                text += f"\n\nВаша индивидуальная ссылка:\n\n{url}"
-            await callback.message.answer(text)
+                await callback.message.answer(
+                    activation_text(result.subscription, url),
+                    reply_markup=activation_keyboard(),
+                    parse_mode=ParseMode.HTML,
+                )
+            else:
+                await callback.message.answer(
+                    "✅ Оплата подтверждена. Подписка активирована. "
+                    "Ссылка ещё готовится."
+                )
     else:
         await callback.answer(
             "Оплата подтверждена, активация будет повторена автоматически.",
             show_alert=True,
         )
+        if callback.message and result.balance_after is not None:
+            await callback.message.answer(
+                "✅ Баланс пополнен\n\n"
+                f"Сумма:\n{result.payment.amount:.2f} ₽\n\n"
+                f"Текущий баланс:\n{result.balance_after:.2f} ₽"
+            )
         for admin_id in admin_ids:
             await callback.bot.send_message(
                 admin_id,
@@ -255,12 +309,3 @@ async def cancel_order(
     )
     if callback.message and order.status.value == "cancelled":
         await callback.message.edit_reply_markup(reply_markup=None)
-
-
-@router.callback_query(F.data == "main_menu")
-async def show_main_menu(callback: CallbackQuery) -> None:
-    await callback.answer()
-    if callback.message:
-        await callback.message.edit_text(
-            "Выберите нужный раздел:", reply_markup=build_main_menu()
-        )

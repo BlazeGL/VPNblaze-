@@ -54,7 +54,7 @@ class Payment(Base):
         ForeignKey("orders.id", ondelete="RESTRICT"), index=True
     )
     provider: Mapped[str] = mapped_column(
-        String(32), default="onlipay", server_default="onlipay"
+        String(32), default="yookassa", server_default="yookassa"
     )
     provider_payment_id: Mapped[str] = mapped_column(String(255))
     status: Mapped[PaymentStatus] = mapped_column(

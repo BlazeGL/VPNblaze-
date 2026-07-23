@@ -1,4 +1,4 @@
-# VPN Telegram Bot — этап 3
+# VPN Telegram Bot
 
 Telegram-бот на aiogram 3 с PostgreSQL, Redis, SQLAlchemy 2, Alembic и отдельным
 FastAPI-приложением для webhook. Реализованы тарифы и заказы предыдущих этапов,
@@ -12,12 +12,18 @@ trial на 7 дней, промокоды, локальные подписки, 
 - `TELEGRAM_BOT_TOKEN` — токен BotFather;
 - `ADMIN_IDS` — Telegram ID администраторов через запятую;
 - `POSTGRES_PASSWORD` — пароль PostgreSQL;
+- `YOOKASSA_SHOP_ID` — идентификатор магазина ЮKassa;
+- `YOOKASSA_SECRET_KEY` — секретный ключ API ЮKassa;
 - `PUBLIC_BASE_URL` — публичный HTTPS-адрес сервиса webhook.
 
-Переменные `ONLIPAY_*` оставлены предварительными. Публичная документация
-merchant API OnliPay не опубликована, поэтому реальный transport и проверка
-подписи намеренно заблокированы до получения официального контракта. Бот не
-создаёт вымышленные endpoint'ы и не подтверждает оплату по success URL.
+Необязательный `YOOKASSA_RETURN_URL` задаёт страницу, куда ЮKassa вернёт
+пользователя после оплаты. Если переменная не заполнена, бот использует ссылку
+на свой Telegram-профиль.
+
+Необязательный `USER_AGREEMENT_URL` задаёт внешний HTTPS-адрес
+пользовательского соглашения. Адрес указывается только в `.env`. Если
+переменная пуста или адрес некорректен, бот открывает встроенное соглашение
+прямо в Telegram.
 
 ## Запуск
 
@@ -30,10 +36,19 @@ docker compose ps
 запускаются `bot` и `webhook`. Endpoint webhook:
 
 ```text
-POST /api/webhooks/onlipay
+POST /api/webhooks/yookassa
 ```
 
-До подключения официального verifier endpoint отвечает `503` и не изменяет БД.
+В личном кабинете ЮKassa в разделе `Интеграция → HTTP-уведомления` укажите:
+
+```text
+https://ваш-домен/api/webhooks/yookassa
+```
+
+Подпишитесь на события `payment.succeeded`, `payment.canceled` и
+`payment.waiting_for_capture`. Webhook не доверяет входящему телу: перед
+изменением заказа бот повторно получает платёж через авторизованный API ЮKassa
+и сверяет идентификатор заказа, сумму и валюту.
 
 ## Миграции
 
