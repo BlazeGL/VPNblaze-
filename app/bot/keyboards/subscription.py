@@ -185,15 +185,7 @@ def subscription_menu(
         rows.append(
             [
                 InlineKeyboardButton(
-                    text="▶️ Активировать снова",
-                    callback_data="balance_reactivate",
-                )
-            ]
-        )
-        rows.append(
-            [
-                InlineKeyboardButton(
-                    text="💳 Пополнить баланс",
+                    text="💳 Купить подписку на 30 дней",
                     callback_data="tariffs",
                 )
             ]

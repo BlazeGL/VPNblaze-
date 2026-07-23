@@ -22,7 +22,8 @@ from app.database.base import Base
 class BalanceTransactionType(StrEnum):
     topup = "topup"
     referral_bonus = "referral_bonus"
-    daily_charge = "daily_charge"
+    subscription_purchase = "subscription_purchase"
+    legacy_daily_charge = "daily_charge"
     refund = "refund"
     adjustment = "adjustment"
 
@@ -58,6 +59,13 @@ class BalanceTransaction(Base):
     idempotency_key: Mapped[str] = mapped_column(String(255))
     reference_type: Mapped[str | None] = mapped_column(String(32), nullable=True)
     reference_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    tariff_id: Mapped[int | None] = mapped_column(
+        ForeignKey("tariffs.id", ondelete="SET NULL"), nullable=True
+    )
+    order_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("orders.id", ondelete="SET NULL"), nullable=True
+    )
+    description: Mapped[str | None] = mapped_column(String(255), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )

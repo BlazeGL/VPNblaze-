@@ -21,7 +21,7 @@ from app.bot.handlers.apps import (
 from app.bot.handlers.bonuses import show_bonuses
 from app.bot.handlers.promos import enter_promo_from_menu
 from app.bot.handlers.start import show_user_agreement
-from app.bot.handlers.tariffs import show_tariffs
+from app.bot.handlers.tariffs import WalletTopUp, show_tariffs
 from app.bot.handlers.trial import show_subscription
 from app.bot.keyboards.start import agreement_button
 from app.bot.rendering import edit_text_or_caption
@@ -159,13 +159,12 @@ async def buy_command(
 @router.message(Command("topup", ignore_case=True))
 async def topup_command(
     message: Message,
-    session_factory: async_sessionmaker[AsyncSession],
+    state: FSMContext,
 ) -> None:
     if not await _private_only(message):
         return
-    # The current YooKassa flow starts from a tariff/order and credits the
-    # confirmed amount to the balance on the server-side webhook.
-    await show_tariffs(_adapter(message, "buy_vpn"), session_factory)
+    await state.set_state(WalletTopUp.amount)
+    await message.answer("Введите сумму пополнения в рублях, например: 150")
 
 
 @router.message(Command("promo", ignore_case=True))
@@ -289,7 +288,8 @@ async def agreement_command(message: Message, settings: Settings) -> None:
 TRANSACTION_LABELS = {
     BalanceTransactionType.topup: "Пополнение",
     BalanceTransactionType.referral_bonus: "Приглашённый друг",
-    BalanceTransactionType.daily_charge: "Оплата VPN",
+    BalanceTransactionType.subscription_purchase: "Покупка подписки",
+    BalanceTransactionType.legacy_daily_charge: "Списание по старой модели",
     BalanceTransactionType.refund: "Возврат",
     BalanceTransactionType.adjustment: "Корректировка",
 }
@@ -310,8 +310,14 @@ def balance_keyboard() -> InlineKeyboardMarkup:
         inline_keyboard=[
             [
                 InlineKeyboardButton(
-                    text="➕ Пополнить",
-                    callback_data="tariffs",
+                    text="💳 Купить подписку за 99 ₽",
+                    callback_data="buy_vpn",
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="➕ Пополнить баланс",
+                    callback_data="balance_topup",
                 )
             ],
             [
@@ -365,6 +371,10 @@ async def show_balance(
     text = (
         "💰 <b>Ваш баланс</b>\n\n"
         f"<b>{_money(user.balance)} ₽</b>\n\n"
+        "Баланс можно пополнять через ЮKassa и получать бонусы "
+        "за приглашённых друзей.\n\n"
+        "Стоимость подписки:\n"
+        "<b>99 ₽ за 30 дней</b>\n\n"
         "Последние операции:\n\n"
         f"{history}"
     )

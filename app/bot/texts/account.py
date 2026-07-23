@@ -177,8 +177,8 @@ def _helpful_message(
         )
     if state == "disabled":
         return (
-            "⚫ Доступ отключён. Пополните баланс минимум на 5 ₽ и "
-            "активируйте VPN снова."
+            "⚫ Оплаченный срок закончился. Купите подписку, чтобы "
+            "возобновить доступ."
         )
     if time_left in {"меньше одного дня", "1 день", "2 дня", "3 дня"}:
         return (
@@ -220,7 +220,13 @@ def account_text(
         f"{expiration_utc.year}"
     )
     if tariff_name:
-        display_tariff = tariff_name
+        display_tariff = (
+            f"{tariff_name} — 99 ₽"
+            if subscription.source_type == SubscriptionSource.paid
+            else tariff_name
+        )
+    elif subscription.source_type == SubscriptionSource.paid:
+        display_tariff = "30 дней — 99 ₽"
     elif subscription.source_type == SubscriptionSource.trial:
         display_tariff = "Пробный период"
     else:

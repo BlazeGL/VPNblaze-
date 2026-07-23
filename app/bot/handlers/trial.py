@@ -22,8 +22,6 @@ from app.core.crypto import SubscriptionUrlCipher
 from app.database.models import Subscription, Tariff, User
 from app.integrations.remnawave.client import RemnawaveClient
 from app.services.audit import add_audit_log
-from app.services.balance import InsufficientBalanceError
-from app.services.billing import BillingService
 from app.services.remnawave_factory import build_subscription_service
 from app.services.remnawave_sync import RemnawaveSyncService
 from app.services.trials import TrialService
@@ -222,37 +220,3 @@ async def show_subscription(
         ),
         parse_mode=ParseMode.HTML,
     )
-
-
-@router.callback_query(F.data == "balance_reactivate")
-async def reactivate_from_balance(
-    callback: CallbackQuery,
-    session_factory: async_sessionmaker[AsyncSession],
-    remnawave_client: RemnawaveClient | None = None,
-) -> None:
-    try:
-        async with session_factory() as session, session.begin():
-            user = await session.scalar(
-                select(User).where(
-                    User.telegram_id == callback.from_user.id
-                )
-            )
-            if user is None:
-                raise LookupError
-            await BillingService(
-                session, remnawave_client
-            ).reactivate(user.id)
-    except LookupError:
-        await callback.answer("Подписка не найдена.", show_alert=True)
-        return
-    except InsufficientBalanceError:
-        await callback.answer(
-            "Для активации нужно минимум 5 ₽ на балансе.",
-            show_alert=True,
-        )
-        return
-    await callback.answer("VPN снова активирован.", show_alert=True)
-    if callback.message:
-        await callback.message.answer(
-            "✅ VPN снова активирован. Суточное списание составит 5 ₽."
-        )

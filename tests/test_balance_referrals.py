@@ -1,7 +1,6 @@
 import uuid
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
-from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -10,6 +9,7 @@ from app.database.models import (
     BalanceTransaction,
     BalanceTransactionType,
     Order,
+    OrderPurpose,
     OrderStatus,
     Payment,
     PaymentStatus,
@@ -91,79 +91,140 @@ async def test_self_referral_is_rejected() -> None:
 
 
 def paid_subscription(user_id: int = 1) -> Subscription:
+    now = datetime.now(UTC)
     return Subscription(
         id=uuid.uuid4(),
         user_id=user_id,
         source_type=SubscriptionSource.paid,
         status=SubscriptionStatus.active,
         provisioning_status=ProvisioningStatus.active,
-        started_at=SimpleNamespace(),
-        expires_at=SimpleNamespace(),
+        started_at=now,
+        expires_at=now + timedelta(days=30),
         device_limit=1,
     )
 
 
-@pytest.mark.asyncio
-async def test_daily_billing_charges_five_rubles_once() -> None:
-    owner = user(1, balance="10.00")
-    subscription = paid_subscription()
-    day = date(2026, 7, 23)
-    session = session_with_scalars(subscription, owner, subscription, None)
-
-    result = await BillingService(session).charge_subscription(
-        subscription.id, billing_date=day
+def subscription_order(user_id: int = 1) -> Order:
+    return Order(
+        id=uuid.uuid4(),
+        user_id=user_id,
+        tariff_id=1,
+        status=OrderStatus.pending,
+        tariff_name_snapshot="BlazeVPN — 30 дней",
+        duration_days_snapshot=30,
+        traffic_limit_gb_snapshot=600,
+        is_unlimited_traffic_snapshot=False,
+        device_limit_snapshot=3,
+        amount_snapshot=Decimal("99.00"),
+        currency_snapshot="RUB",
+        original_amount=Decimal("99.00"),
+        discount_amount=Decimal("0.00"),
+        final_amount=Decimal("99.00"),
+        bonus_days=0,
     )
 
-    assert result.charged is True
-    assert owner.balance == Decimal("5.00")
-    transaction = session.add.call_args.args[0]
-    assert transaction.amount == Decimal("-5.00")
-    assert transaction.idempotency_key.endswith(day.isoformat())
-    assert transaction.balance_before == Decimal("10.00")
-    assert transaction.balance_after == Decimal("5.00")
 
-
-@pytest.mark.asyncio
-async def test_daily_billing_is_idempotent() -> None:
-    owner = user(1, balance="10.00")
+async def purchase(balance: str) -> tuple[object, User, MagicMock]:
+    owner = user(1, balance=balance)
+    order = subscription_order()
     subscription = paid_subscription()
-    transaction = BalanceTransaction(
+    session = session_with_scalars(order, owner, None)
+    subscription_service = MagicMock()
+    subscription_service.extend_from_paid_order = AsyncMock(
+        return_value=subscription
+    )
+    result = await BillingService(
+        session, subscription_service
+    ).purchase_order(
+        order.id,
         user_id=owner.id,
-        type=BalanceTransactionType.daily_charge,
-        amount=Decimal("-5.00"),
-        balance_before=Decimal("10.00"),
-        balance_after=Decimal("5.00"),
-        idempotency_key=f"daily:{subscription.id}:2026-07-23",
     )
-    owner.balance = Decimal("5.00")
-    session = session_with_scalars(
-        subscription, owner, subscription, transaction
-    )
-
-    result = await BillingService(session).charge_subscription(
-        subscription.id, billing_date=date(2026, 7, 23)
-    )
-
-    assert result.already_processed is True
-    assert owner.balance == Decimal("5.00")
-    session.add.assert_not_called()
+    return result, owner, session
 
 
 @pytest.mark.asyncio
-async def test_insufficient_balance_disables_subscription() -> None:
-    owner = user(1, balance="4.99")
-    subscription = paid_subscription()
-    session = session_with_scalars(subscription, owner, subscription, None)
+@pytest.mark.parametrize(
+    ("balance", "remaining"),
+    [("99.00", "0.00"), ("100.00", "1.00")],
+)
+async def test_subscription_purchase_debits_exactly_99(
+    balance: str, remaining: str
+) -> None:
+    result, owner, session = await purchase(balance)
 
-    result = await BillingService(session).charge_subscription(
-        subscription.id, billing_date=date(2026, 7, 23)
+    assert result.purchased is True
+    assert owner.balance == Decimal(remaining)
+    transaction = session.add.call_args.args[0]
+    assert transaction.type == BalanceTransactionType.subscription_purchase
+    assert transaction.amount == Decimal("-99.00")
+    assert transaction.balance_before == Decimal(balance)
+    assert transaction.balance_after == Decimal(remaining)
+    assert transaction.tariff_id == 1
+    assert transaction.order_id == result.order.id
+
+
+@pytest.mark.asyncio
+async def test_insufficient_balance_does_not_buy_or_disable() -> None:
+    owner = user(1, balance="98.00")
+    order = subscription_order()
+    session = session_with_scalars(order, owner, None)
+    subscription_service = MagicMock()
+
+    result = await BillingService(
+        session, subscription_service
+    ).purchase_order(
+        order.id,
+        user_id=owner.id,
     )
 
-    assert result.disabled is True
-    assert owner.balance == Decimal("4.99")
-    assert subscription.status == SubscriptionStatus.disabled
-    assert subscription.provisioning_status == ProvisioningStatus.disabled
+    assert result.purchased is False
+    assert result.shortfall == Decimal("1.00")
+    assert owner.balance == Decimal("98.00")
+    assert order.status == OrderStatus.pending
     session.add.assert_not_called()
+    subscription_service.extend_from_paid_order.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_repeated_purchase_request_does_not_debit_twice() -> None:
+    owner = user(1, balance="99.00")
+    order = subscription_order()
+    subscription = paid_subscription()
+    session = session_with_scalars(
+        order,
+        owner,
+        None,
+        order,
+        owner,
+        subscription,
+    )
+    subscription_service = MagicMock()
+    subscription_service.extend_from_paid_order = AsyncMock(
+        return_value=subscription
+    )
+    service = BillingService(session, subscription_service)
+
+    first = await service.purchase_order(order.id, user_id=owner.id)
+    second = await service.purchase_order(order.id, user_id=owner.id)
+
+    assert first.purchased is True
+    assert second.purchased is True
+    assert second.already_processed is True
+    assert owner.balance == Decimal("0.00")
+    balance_entries = [
+        call.args[0]
+        for call in session.add.call_args_list
+        if isinstance(call.args[0], BalanceTransaction)
+    ]
+    assert len(balance_entries) == 1
+
+
+@pytest.mark.asyncio
+async def test_two_referral_bonuses_can_pay_for_subscription() -> None:
+    result, owner, _ = await purchase("100.00")
+
+    assert result.purchased is True
+    assert owner.balance == Decimal("1.00")
 
 
 @pytest.mark.asyncio
@@ -250,7 +311,7 @@ async def test_successful_payment_credits_balance_once() -> None:
         expires_at=datetime.now(UTC) + timedelta(days=30),
         device_limit=3,
     )
-    session = session_with_scalars(payment, order, owner, None)
+    session = session_with_scalars(payment, order, None, None)
     session.get = AsyncMock(return_value=owner)
     subscription_service = MagicMock()
     subscription_service.extend_from_paid_order = AsyncMock(
@@ -269,15 +330,71 @@ async def test_successful_payment_credits_balance_once() -> None:
     )
 
     assert result.completed is True
-    assert result.balance_after == Decimal("500.00")
-    assert owner.balance == Decimal("500.00")
+    assert result.balance_after == Decimal("0.00")
+    assert owner.balance == Decimal("0.00")
     balance_entries = [
         call.args[0]
         for call in session.add.call_args_list
         if isinstance(call.args[0], BalanceTransaction)
     ]
-    assert len(balance_entries) == 1
+    assert len(balance_entries) == 2
     assert balance_entries[0].type == BalanceTransactionType.topup
+    assert balance_entries[1].type == BalanceTransactionType.subscription_purchase
+    assert balance_entries[1].amount == Decimal("-500.00")
+
+
+@pytest.mark.asyncio
+async def test_wallet_topup_does_not_activate_subscription() -> None:
+    owner = user(1, balance="50.00")
+    order = Order(
+        id=uuid.uuid4(),
+        user_id=owner.id,
+        tariff_id=None,
+        purpose=OrderPurpose.wallet_topup,
+        status=OrderStatus.awaiting_payment,
+        tariff_name_snapshot="Пополнение баланса",
+        duration_days_snapshot=0,
+        traffic_limit_gb_snapshot=None,
+        is_unlimited_traffic_snapshot=False,
+        device_limit_snapshot=1,
+        amount_snapshot=Decimal("49.00"),
+        currency_snapshot="RUB",
+        original_amount=Decimal("49.00"),
+        discount_amount=Decimal("0.00"),
+        final_amount=Decimal("49.00"),
+        bonus_days=0,
+    )
+    payment = Payment(
+        id=uuid.uuid4(),
+        order_id=order.id,
+        provider="yookassa",
+        provider_payment_id="wallet-topup",
+        status=PaymentStatus.pending,
+        amount=Decimal("49.00"),
+        currency="RUB",
+        payment_url="https://yookassa.example/payment",
+        idempotency_key="wallet-topup-create",
+    )
+    session = session_with_scalars(payment, order, None)
+    session.get = AsyncMock(return_value=owner)
+    subscription_service = MagicMock()
+
+    result = await PaymentService(
+        session,
+        OnliPayClient(),
+        subscription_service=subscription_service,
+    ).process_confirmed_payment(
+        provider_payment_id=payment.provider_payment_id,
+        reported_order_id=str(order.id),
+        amount=payment.amount,
+        currency=payment.currency,
+    )
+
+    assert result.completed is True
+    assert result.subscription is None
+    assert result.balance_after == Decimal("99.00")
+    assert owner.balance == Decimal("99.00")
+    subscription_service.extend_from_paid_order.assert_not_called()
 
 
 def test_referral_code_cannot_be_changed() -> None:

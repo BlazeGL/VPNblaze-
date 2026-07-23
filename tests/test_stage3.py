@@ -314,7 +314,7 @@ async def test_repeated_webhook_does_not_extend_subscription() -> None:
     session = session_mock()
     payment, order = make_payment_and_order()
     order.status = OrderStatus.completed
-    session.scalar.side_effect = [payment, order]
+    session.scalar.side_effect = [payment, order, None, None]
     subscriptions = MagicMock()
     subscriptions.extend_from_paid_order = AsyncMock()
 
@@ -377,7 +377,7 @@ async def test_successful_payment_completes_order() -> None:
     session = session_mock()
     payment, order = make_payment_and_order()
     user = make_user()
-    session.scalar.side_effect = [payment, order]
+    session.scalar.side_effect = [payment, order, None, None]
     session.get.return_value = user
     subscription = Subscription(
         user_id=1,
@@ -418,6 +418,34 @@ async def test_bonus_days_are_added_to_subscription() -> None:
     ).extend_from_paid_order(make_user(), order, now=now)
 
     assert subscription.expires_at == now + timedelta(days=37)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("active", [True, False])
+async def test_paid_term_extends_from_correct_base(active: bool) -> None:
+    session = session_mock()
+    _, order = make_payment_and_order()
+    order.duration_days_snapshot = 30
+    order.bonus_days = 0
+    now = datetime(2026, 7, 23, 12, tzinfo=UTC)
+    old_expiry = now + timedelta(days=8) if active else now - timedelta(days=1)
+    subscription = Subscription(
+        user_id=1,
+        source_type=SubscriptionSource.paid,
+        status=SubscriptionStatus.active,
+        started_at=now - timedelta(days=10),
+        expires_at=old_expiry,
+        order_id=uuid.uuid4(),
+        device_limit=3,
+    )
+    session.scalar.return_value = subscription
+
+    updated = await SubscriptionService(
+        session, DeferredSubscriptionAdapter()
+    ).extend_from_paid_order(make_user(), order, now=now)
+
+    expected_base = old_expiry if active else now
+    assert updated.expires_at == expected_base + timedelta(days=30)
 
 
 @pytest.mark.asyncio

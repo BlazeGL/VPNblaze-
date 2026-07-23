@@ -8,7 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from app.bot.keyboards.subscription import activation_keyboard
 from app.bot.texts.subscription import activation_text
 from app.core.config import Settings
-from app.database.models import User
+from app.database.models import OrderPurpose, User
 from app.integrations.payments import NormalizedPaymentStatus
 from app.integrations.yookassa.client import YooKassaClient
 from app.integrations.yookassa.exceptions import (
@@ -133,7 +133,11 @@ async def yookassa_webhook(
         ) from exc
 
     if telegram_id is not None and result.completed and not result.already_processed:
-        balance = result.balance_after or result.payment.amount
+        balance = (
+            result.balance_after
+            if result.balance_after is not None
+            else result.payment.amount
+        )
         notification = (
             "✅ Баланс пополнен\n\n"
             f"Сумма:\n{result.payment.amount:.2f} ₽\n\n"
@@ -141,7 +145,13 @@ async def yookassa_webhook(
         )
         notification_markup = None
         notification_parse_mode = None
-        if (
+        if result.order.purpose == OrderPurpose.wallet_topup:
+            notification = (
+                f"{notification}\n\n"
+                "Пополнение кошелька завершено. Для продления VPN "
+                "подтвердите покупку тарифа отдельно."
+            )
+        elif (
             result.subscription is not None
             and result.subscription.subscription_url_encrypted
             and request.app.state.subscription_cipher is not None
@@ -155,6 +165,11 @@ async def yookassa_webhook(
             )
             notification_markup = activation_keyboard()
             notification_parse_mode = ParseMode.HTML
+        else:
+            notification = (
+                f"{notification}\n\n"
+                "✅ Подписка активирована. Ссылка ещё готовится."
+            )
         background_tasks.add_task(
             notify_user,
             request.app.state.bot,

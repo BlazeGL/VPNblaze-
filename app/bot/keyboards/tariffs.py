@@ -23,12 +23,14 @@ def build_tariffs(tariffs: list[Tariff]) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def build_tariff_card(tariff_id: int) -> InlineKeyboardMarkup:
+def build_tariff_card(
+    tariff_id: int, price: object = 99
+) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
                 InlineKeyboardButton(
-                    text="Купить",
+                    text=f"Купить за {money(price)}",
                     callback_data=TariffCallback(
                         action="buy", tariff_id=tariff_id
                     ).pack(),
@@ -46,6 +48,14 @@ def build_order(order: Order) -> InlineKeyboardMarkup:
         inline_keyboard=[
             [
                 InlineKeyboardButton(
+                    text=f"💰 Купить с баланса за {money(order.original_amount)}",
+                    callback_data=OrderCallback(
+                        action="balance", order_id=order_id
+                    ).pack(),
+                )
+            ],
+            [
+                InlineKeyboardButton(
                     text="🎟 Применить промокод",
                     callback_data=PromoCallback(
                         action="apply", order_id=order_id
@@ -54,7 +64,7 @@ def build_order(order: Order) -> InlineKeyboardMarkup:
             ],
             [
                 InlineKeyboardButton(
-                    text="Перейти к оплате",
+                    text="💳 Оплатить через ЮKassa",
                     callback_data=OrderCallback(action="pay", order_id=order_id).pack(),
                 )
             ],
@@ -67,6 +77,40 @@ def build_order(order: Order) -> InlineKeyboardMarkup:
                 )
             ],
             [InlineKeyboardButton(text="Главное меню", callback_data="main_menu")],
+        ]
+    )
+
+
+def build_insufficient_funds(
+    order: Order, shortfall: object
+) -> InlineKeyboardMarkup:
+    order_id = str(order.id)
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text=f"➕ Пополнить на {money(shortfall)}",
+                    callback_data=OrderCallback(
+                        action="topup_shortfall", order_id=order_id
+                    ).pack(),
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="💳 Выбрать другую сумму",
+                    callback_data=OrderCallback(
+                        action="topup_other", order_id=order_id
+                    ).pack(),
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="⬅️ Назад",
+                    callback_data=TariffCallback(
+                        action="view", tariff_id=order.tariff_id or 0
+                    ).pack(),
+                )
+            ],
         ]
     )
 

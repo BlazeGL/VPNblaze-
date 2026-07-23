@@ -1,6 +1,6 @@
 import asyncio
 import logging
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from aiogram import Bot
 from aiogram.enums import ParseMode
@@ -60,7 +60,8 @@ async def retry_subscription_activations(
                     subscription_cipher,
                     internal_squad_uuid,
                 )
-                await _disable_expired(session_factory, remnawave_client)
+            await _disable_expired(session_factory, remnawave_client)
+            await _send_expiry_notifications(session_factory, bot)
         except Exception:
             logger.exception("Subscription activation retry loop failed")
         try:
@@ -157,6 +158,73 @@ async def _retry_paid_orders(
             logger.warning("Paid order retry rejected: %s", exc.reason)
 
 
+async def _send_expiry_notifications(
+    session_factory: async_sessionmaker[AsyncSession],
+    bot: Bot,
+) -> None:
+    now = datetime.now(UTC)
+    async with session_factory() as session:
+        ids = list(
+            await session.scalars(
+                select(Subscription.id)
+                .where(
+                    Subscription.status.in_(
+                        [
+                            SubscriptionStatus.active,
+                            SubscriptionStatus.expired,
+                        ]
+                    ),
+                    Subscription.expires_at <= now + timedelta(days=3),
+                )
+                .limit(100)
+            )
+        )
+    for item_id in ids:
+        async with session_factory() as session, session.begin():
+            item = await session.scalar(
+                select(Subscription)
+                .where(Subscription.id == item_id)
+                .with_for_update(skip_locked=True)
+            )
+            if item is None:
+                continue
+            user = await session.get(User, item.user_id)
+            if user is None:
+                continue
+            current = datetime.now(UTC)
+            if item.expires_at <= current:
+                field = "expired_notice_at"
+                text = (
+                    "⚫ <b>Подписка закончилась</b>\n\n"
+                    "VPN-доступ отключён после окончания оплаченного срока.\n\n"
+                    "Продление: <b>99 ₽ за 30 дней</b>"
+                )
+            elif item.expires_at <= current + timedelta(days=1):
+                field = "expiry_notice_1d_at"
+                text = (
+                    "⚠️ <b>Подписка закончится через 1 день</b>\n\n"
+                    "Продлите BlazeVPN заранее, чтобы подключение не "
+                    "прерывалось.\n\n"
+                    "Стоимость продления: <b>99 ₽ за 30 дней</b>"
+                )
+            else:
+                field = "expiry_notice_3d_at"
+                text = (
+                    "⚠️ <b>Подписка закончится через 3 дня</b>\n\n"
+                    "Продлите BlazeVPN заранее, чтобы подключение не "
+                    "прерывалось.\n\n"
+                    "Стоимость продления: <b>99 ₽ за 30 дней</b>"
+                )
+            if getattr(item, field) is not None:
+                continue
+            await bot.send_message(
+                user.telegram_id,
+                text,
+                parse_mode=ParseMode.HTML,
+            )
+            setattr(item, field, current)
+
+
 async def _retry_subscriptions(
     session_factory: async_sessionmaker[AsyncSession],
     bot: Bot,
@@ -203,15 +271,22 @@ async def _retry_subscriptions(
             ).provision(item, user, source=item.source_type, order_id=item.order_id)
             attempts = item.activation_attempts
             encrypted_url = item.subscription_url_encrypted
-            if result.status == SubscriptionStatus.active and encrypted_url:
-                add_audit_log(
-                    session,
-                    action="subscription_url_sent",
-                    entity_type="subscription",
-                    entity_id=item.id,
-                    actor_user_id=user.id,
-                    actor_telegram_id=user.telegram_id,
-                )
+            if result.status == SubscriptionStatus.active:
+                if item.order_id is not None:
+                    order = await session.get(Order, item.order_id)
+                    if order is not None and order.status == OrderStatus.processing:
+                        order.status = OrderStatus.completed
+                        order.completed_at = datetime.now(UTC)
+                        order.failure_reason = None
+                if encrypted_url:
+                    add_audit_log(
+                        session,
+                        action="subscription_url_sent",
+                        entity_type="subscription",
+                        entity_id=item.id,
+                        actor_user_id=user.id,
+                        actor_telegram_id=user.telegram_id,
+                    )
         if result.status == SubscriptionStatus.active:
             url = cipher.decrypt(encrypted_url) if encrypted_url else None
             await bot.send_message(
@@ -232,7 +307,8 @@ async def _retry_subscriptions(
 
 
 async def _disable_expired(
-    session_factory: async_sessionmaker[AsyncSession], client: RemnawaveClient
+    session_factory: async_sessionmaker[AsyncSession],
+    client: RemnawaveClient | None,
 ) -> None:
     async with session_factory() as session:
         ids = list(
@@ -240,8 +316,16 @@ async def _disable_expired(
                 select(Subscription.id)
                 .where(
                     Subscription.expires_at <= datetime.now(UTC),
-                    Subscription.status != SubscriptionStatus.expired,
-                    Subscription.remnawave_user_uuid.is_not(None),
+                    (
+                        Subscription.status != SubscriptionStatus.expired
+                    )
+                    | (
+                        Subscription.remnawave_user_uuid.is_not(None)
+                        & (
+                            Subscription.remnawave_status.is_(None)
+                            | (Subscription.remnawave_status != "DISABLED")
+                        )
+                    ),
                 )
                 .limit(50)
             )
@@ -253,15 +337,24 @@ async def _disable_expired(
                 .where(Subscription.id == item_id)
                 .with_for_update(skip_locked=True)
             )
-            if item and item.remnawave_user_uuid:
-                await client.disable_user(item.remnawave_user_uuid)
+            if item:
+                was_expired = item.status == SubscriptionStatus.expired
+                remote_disabled = False
+                if item.remnawave_user_uuid and client:
+                    await client.disable_user(item.remnawave_user_uuid)
+                    item.remnawave_status = "DISABLED"
+                    remote_disabled = True
                 item.status = SubscriptionStatus.expired
                 item.provisioning_status = ProvisioningStatus.disabled
-                item.remnawave_status = "DISABLED"
-                add_audit_log(
-                    session,
-                    action="remnawave_user_disabled",
-                    entity_type="subscription",
-                    entity_id=item.id,
-                    actor_user_id=item.user_id,
-                )
+                if remote_disabled or not was_expired:
+                    add_audit_log(
+                        session,
+                        action=(
+                            "remnawave_user_disabled"
+                            if remote_disabled
+                            else "subscription_expired"
+                        ),
+                        entity_type="subscription",
+                        entity_id=item.id,
+                        actor_user_id=item.user_id,
+                    )

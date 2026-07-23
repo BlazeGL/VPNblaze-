@@ -30,6 +30,11 @@ class OrderStatus(StrEnum):
     failed = "failed"
 
 
+class OrderPurpose(StrEnum):
+    subscription_purchase = "subscription_purchase"
+    wallet_topup = "wallet_topup"
+
+
 class Order(Base):
     __tablename__ = "orders"
 
@@ -37,8 +42,18 @@ class Order(Base):
     user_id: Mapped[int] = mapped_column(
         ForeignKey("users.id", ondelete="RESTRICT"), index=True
     )
-    tariff_id: Mapped[int] = mapped_column(
-        ForeignKey("tariffs.id", ondelete="RESTRICT"), index=True
+    tariff_id: Mapped[int | None] = mapped_column(
+        ForeignKey("tariffs.id", ondelete="RESTRICT"), index=True, nullable=True
+    )
+    purpose: Mapped[OrderPurpose] = mapped_column(
+        Enum(
+            OrderPurpose,
+            name="order_purpose",
+            values_callable=lambda values: [item.value for item in values],
+        ),
+        default=OrderPurpose.subscription_purchase,
+        server_default=OrderPurpose.subscription_purchase.value,
+        index=True,
     )
     status: Mapped[OrderStatus] = mapped_column(
         Enum(

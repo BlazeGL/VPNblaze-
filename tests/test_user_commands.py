@@ -112,10 +112,10 @@ async def test_promo_entry_clears_conflicting_state_and_starts_existing_fsm(
 def test_balance_operation_is_rendered_for_user() -> None:
     transaction = SimpleNamespace(
         amount=Decimal("-199.00"),
-        type=BalanceTransactionType.daily_charge,
+        type=BalanceTransactionType.subscription_purchase,
     )
 
-    assert _transaction_line(transaction) == "• −199 ₽ — Оплата VPN"  # type: ignore[arg-type]
+    assert _transaction_line(transaction) == "• −199 ₽ — Покупка подписки"  # type: ignore[arg-type]
 
 
 def test_private_command_set_matches_security_requirement() -> None:

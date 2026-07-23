@@ -3,7 +3,7 @@ from app.database.models.balance import (
     BalanceTransaction,
     BalanceTransactionType,
 )
-from app.database.models.order import Order, OrderStatus
+from app.database.models.order import Order, OrderPurpose, OrderStatus
 from app.database.models.payment import Payment, PaymentStatus
 from app.database.models.promo import (
     PromoCode,
@@ -30,6 +30,7 @@ __all__ = [
     "BalanceTransaction",
     "BalanceTransactionType",
     "Order",
+    "OrderPurpose",
     "OrderStatus",
     "Payment",
     "PaymentStatus",

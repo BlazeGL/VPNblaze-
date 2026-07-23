@@ -1,5 +1,6 @@
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
+from uuid import UUID
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -72,6 +73,9 @@ class BalanceService:
         idempotency_key: str,
         reference_type: str | None = None,
         reference_id: str | None = None,
+        tariff_id: int | None = None,
+        order_id: UUID | None = None,
+        description: str | None = None,
         locked_user: User | None = None,
     ) -> BalanceChange:
         normalized = normalize_money(amount)
@@ -118,6 +122,9 @@ class BalanceService:
             idempotency_key=idempotency_key,
             reference_type=reference_type,
             reference_id=reference_id,
+            tariff_id=tariff_id,
+            order_id=order_id,
+            description=description,
         )
         user.balance = after
         self.session.add(transaction)
@@ -133,6 +140,9 @@ class BalanceService:
         idempotency_key: str,
         reference_type: str | None = None,
         reference_id: str | None = None,
+        tariff_id: int | None = None,
+        order_id: UUID | None = None,
+        description: str | None = None,
         locked_user: User | None = None,
     ) -> BalanceChange:
         normalized = normalize_money(amount)
@@ -145,6 +155,9 @@ class BalanceService:
             idempotency_key=idempotency_key,
             reference_type=reference_type,
             reference_id=reference_id,
+            tariff_id=tariff_id,
+            order_id=order_id,
+            description=description,
             locked_user=locked_user,
         )
 
@@ -157,6 +170,9 @@ class BalanceService:
         idempotency_key: str,
         reference_type: str | None = None,
         reference_id: str | None = None,
+        tariff_id: int | None = None,
+        order_id: UUID | None = None,
+        description: str | None = None,
         locked_user: User | None = None,
     ) -> BalanceChange:
         normalized = normalize_money(amount)
@@ -169,5 +185,8 @@ class BalanceService:
             idempotency_key=idempotency_key,
             reference_type=reference_type,
             reference_id=reference_id,
+            tariff_id=tariff_id,
+            order_id=order_id,
+            description=description,
             locked_user=locked_user,
         )

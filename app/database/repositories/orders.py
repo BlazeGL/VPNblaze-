@@ -4,7 +4,7 @@ from datetime import UTC, datetime
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.database.models import Order, OrderStatus, Tariff
+from app.database.models import Order, OrderPurpose, OrderStatus, Tariff
 
 
 class OrderOwnershipError(PermissionError):
@@ -32,6 +32,34 @@ class OrderRepository:
             original_amount=tariff.price,
             discount_amount=0,
             final_amount=tariff.price,
+            bonus_days=0,
+        )
+        self.session.add(order)
+        await self.session.flush()
+        return order
+
+    async def create_wallet_topup(
+        self,
+        user_id: int,
+        amount: object,
+        *,
+        currency: str = "RUB",
+    ) -> Order:
+        order = Order(
+            user_id=user_id,
+            tariff_id=None,
+            purpose=OrderPurpose.wallet_topup,
+            status=OrderStatus.pending,
+            tariff_name_snapshot="Пополнение баланса",
+            duration_days_snapshot=0,
+            traffic_limit_gb_snapshot=None,
+            is_unlimited_traffic_snapshot=False,
+            device_limit_snapshot=1,
+            amount_snapshot=amount,
+            currency_snapshot=currency,
+            original_amount=amount,
+            discount_amount=0,
+            final_amount=amount,
             bonus_days=0,
         )
         self.session.add(order)

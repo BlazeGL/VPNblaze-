@@ -1,9 +1,12 @@
 import logging
 import uuid
+from decimal import Decimal, InvalidOperation
 
 from aiogram import F, Router
 from aiogram.enums import ChatType, ParseMode
-from aiogram.types import CallbackQuery
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State, StatesGroup
+from aiogram.types import CallbackQuery, Message
 from redis.asyncio import Redis
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -16,6 +19,7 @@ from app.bot.keyboards.start import (
 )
 from app.bot.keyboards.subscription import activation_keyboard
 from app.bot.keyboards.tariffs import (
+    build_insufficient_funds,
     build_order,
     build_tariff_card,
     build_tariffs,
@@ -24,7 +28,7 @@ from app.bot.keyboards.tariffs import (
 from app.bot.rendering import edit_text_or_caption
 from app.bot.texts.subscription import activation_text
 from app.core.crypto import SubscriptionUrlCipher
-from app.database.models import Payment
+from app.database.models import OrderPurpose, Payment
 from app.database.repositories import (
     OrderOwnershipError,
     OrderRepository,
@@ -34,11 +38,16 @@ from app.database.repositories import (
 from app.integrations.remnawave.client import RemnawaveClient
 from app.integrations.yookassa.client import YooKassaClient
 from app.integrations.yookassa.exceptions import YooKassaError
+from app.services.billing import BillingService, BillingValidationError
 from app.services.payments import PaymentService, PaymentValidationError
 from app.services.remnawave_factory import build_subscription_service
 
 logger = logging.getLogger(__name__)
 router = Router(name=__name__)
+
+
+class WalletTopUp(StatesGroup):
+    amount = State()
 
 
 def traffic(limit: int | None, unlimited: bool) -> str:
@@ -94,7 +103,7 @@ async def show_tariff(
         await edit_text_or_caption(
             callback.message,
             text,
-            build_tariff_card(tariff.id),
+            build_tariff_card(tariff.id, tariff.price),
         )
 
 
@@ -124,11 +133,228 @@ async def buy_tariff(
         f"Трафик: {order_traffic}\n"
         f"Устройства: до {order.device_limit_snapshot}\n"
         f"К оплате: {money(order.final_amount, order.currency_snapshot)}\n\n"
+        f"Ваш баланс: {money(user.balance)}\n\n"
+        "Подтвердите покупку с баланса или оплатите заказ через ЮKassa.\n\n"
         f"Номер заказа: {str(order.id)[:8]}"
     )
     await callback.answer()
     if callback.message:
         await edit_text_or_caption(callback.message, text, build_order(order))
+
+
+@router.callback_query(OrderCallback.filter(F.action == "balance"))
+async def purchase_from_balance(
+    callback: CallbackQuery,
+    callback_data: OrderCallback,
+    session_factory: async_sessionmaker[AsyncSession],
+    remnawave_client: RemnawaveClient | None = None,
+    subscription_cipher: SubscriptionUrlCipher | None = None,
+    remnawave_internal_squad_uuid: str | None = None,
+) -> None:
+    try:
+        async with session_factory() as session, session.begin():
+            user = await UserRepository(session).get_by_telegram_id(
+                callback.from_user.id
+            )
+            if user is None:
+                raise BillingValidationError("user_not_found")
+            result = await BillingService(
+                session,
+                build_subscription_service(
+                    session,
+                    remnawave_client,
+                    subscription_cipher,
+                    remnawave_internal_squad_uuid,
+                ),
+            ).purchase_order(
+                callback_data.order_id,
+                user_id=user.id,
+            )
+    except BillingValidationError:
+        await callback.answer("Заказ нельзя оплатить с баланса.", show_alert=True)
+        return
+
+    if not result.purchased and result.shortfall > 0:
+        await callback.answer("Недостаточно средств", show_alert=True)
+        if callback.message:
+            text = (
+                "❌ <b>Недостаточно средств</b>\n\n"
+                f"Стоимость тарифа:\n<b>{money(result.amount)}</b>\n\n"
+                f"Ваш баланс:\n<b>{money(result.balance_before)}</b>\n\n"
+                f"Не хватает:\n<b>{money(result.shortfall)}</b>"
+            )
+            await edit_text_or_caption(
+                callback.message,
+                text,
+                build_insufficient_funds(result.order, result.shortfall),
+                parse_mode=ParseMode.HTML,
+            )
+        return
+    if not result.purchased:
+        await callback.answer(
+            "Оплата списана, активация будет повторена автоматически.",
+            show_alert=True,
+        )
+        if callback.message:
+            await callback.message.answer(
+                "✅ Оплата сохранена\n\n"
+                f"Списано: {money(result.amount)}\n"
+                f"Баланс: {money(result.balance_after)}\n\n"
+                "Активация будет повторена автоматически."
+            )
+        return
+
+    await callback.answer(
+        "Подписка уже оплачена"
+        if result.already_processed
+        else "Подписка оплачена",
+        show_alert=True,
+    )
+    if callback.message:
+        await callback.message.answer(
+            "✅ Подписка активирована\n\n"
+            f"Списано: {money(result.amount)}\n"
+            f"Баланс: {money(result.balance_after)}"
+        )
+
+
+async def _create_wallet_payment(
+    *,
+    session: AsyncSession,
+    user_id: int,
+    amount: Decimal,
+    payment_client: YooKassaClient,
+    payment_return_url: str | None,
+    public_base_url: str | None,
+) -> Payment:
+    order = await OrderRepository(session).create_wallet_topup(user_id, amount)
+    return await PaymentService(
+        session,
+        payment_client,
+        public_base_url=public_base_url,
+        return_url=payment_return_url,
+    ).create_for_order(order.id, user_id=user_id)
+
+
+@router.callback_query(OrderCallback.filter(F.action == "topup_shortfall"))
+async def topup_shortfall(
+    callback: CallbackQuery,
+    callback_data: OrderCallback,
+    session_factory: async_sessionmaker[AsyncSession],
+    payment_client: YooKassaClient,
+    payment_return_url: str | None,
+    public_base_url: str | None,
+    remnawave_client: RemnawaveClient | None = None,
+    subscription_cipher: SubscriptionUrlCipher | None = None,
+    remnawave_internal_squad_uuid: str | None = None,
+) -> None:
+    try:
+        async with session_factory() as session, session.begin():
+            user = await UserRepository(session).get_by_telegram_id(
+                callback.from_user.id
+            )
+            order = await OrderRepository(session).get_by_id(callback_data.order_id)
+            if user is None or order is None or order.user_id != user.id:
+                raise PaymentValidationError("order_not_found")
+            purchase = await BillingService(
+                session,
+                build_subscription_service(
+                    session,
+                    remnawave_client,
+                    subscription_cipher,
+                    remnawave_internal_squad_uuid,
+                ),
+            ).purchase_order(order.id, user_id=user.id)
+            if purchase.purchased:
+                await callback.answer("Средств уже достаточно.", show_alert=True)
+                return
+            payment = await _create_wallet_payment(
+                session=session,
+                user_id=user.id,
+                amount=purchase.shortfall,
+                payment_client=payment_client,
+                payment_return_url=payment_return_url,
+                public_base_url=public_base_url,
+            )
+    except (BillingValidationError, PaymentValidationError, YooKassaError):
+        await callback.answer("Не удалось создать пополнение.", show_alert=True)
+        return
+    await callback.answer()
+    if callback.message:
+        await edit_text_or_caption(
+            callback.message,
+            f"Пополнение баланса на {money(payment.amount)} создано.",
+            build_payment(payment),
+        )
+
+
+@router.callback_query(
+    F.data == "balance_topup"
+)
+async def request_wallet_topup(
+    callback: CallbackQuery, state: FSMContext
+) -> None:
+    await state.set_state(WalletTopUp.amount)
+    await callback.answer()
+    if callback.message:
+        await callback.message.answer(
+            "Введите сумму пополнения в рублях, например: 150"
+        )
+
+
+@router.callback_query(OrderCallback.filter(F.action == "topup_other"))
+async def request_other_topup(
+    callback: CallbackQuery, state: FSMContext
+) -> None:
+    await state.set_state(WalletTopUp.amount)
+    await callback.answer()
+    if callback.message:
+        await callback.message.answer(
+            "Введите другую сумму пополнения в рублях, например: 150"
+        )
+
+
+@router.message(WalletTopUp.amount)
+async def create_wallet_topup(
+    message: Message,
+    state: FSMContext,
+    session_factory: async_sessionmaker[AsyncSession],
+    payment_client: YooKassaClient,
+    payment_return_url: str | None,
+    public_base_url: str | None,
+) -> None:
+    try:
+        amount = Decimal((message.text or "").replace(",", ".")).quantize(
+            Decimal("0.01")
+        )
+        if amount < Decimal("1.00") or amount > Decimal("100000.00"):
+            raise InvalidOperation
+    except (InvalidOperation, ValueError):
+        await message.answer("Введите сумму от 1 до 100 000 ₽.")
+        return
+    try:
+        async with session_factory() as session, session.begin():
+            user = await UserRepository(session).get_by_telegram_id(
+                message.from_user.id
+            )
+            if user is None:
+                raise PaymentValidationError("user_not_found")
+            payment = await _create_wallet_payment(
+                session=session,
+                user_id=user.id,
+                amount=amount,
+                payment_client=payment_client,
+                payment_return_url=payment_return_url,
+                public_base_url=public_base_url,
+            )
+    except (PaymentValidationError, YooKassaError):
+        await message.answer("Не удалось создать пополнение. Попробуйте позднее.")
+        return
+    await state.clear()
+    await message.answer(
+        f"Пополнение на {money(payment.amount)} создано.",
+        reply_markup=build_payment(payment),
+    )
 
 
 @router.callback_query(OrderCallback.filter(F.action == "pay"))
@@ -239,13 +465,22 @@ async def check_payment(
     elif result.completed:
         await callback.answer("Оплата подтверждена", show_alert=True)
         if callback.message:
-            balance = result.balance_after or result.payment.amount
+            balance = (
+                result.balance_after
+                if result.balance_after is not None
+                else result.payment.amount
+            )
             await callback.message.answer(
                 "✅ Баланс пополнен\n\n"
                 f"Сумма:\n{result.payment.amount:.2f} ₽\n\n"
                 f"Текущий баланс:\n{balance:.2f} ₽"
             )
-            if (
+            if result.order.purpose == OrderPurpose.wallet_topup:
+                await callback.message.answer(
+                    "Пополнение кошелька завершено. Для продления VPN "
+                    "подтвердите покупку тарифа отдельно."
+                )
+            elif (
                 result.subscription is not None
                 and result.subscription.subscription_url_encrypted
                 and subscription_cipher is not None

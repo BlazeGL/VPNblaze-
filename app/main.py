@@ -16,7 +16,6 @@ from app.integrations.remnawave.client import RemnawaveClient
 from app.integrations.remnawave.exceptions import RemnawaveError
 from app.integrations.yookassa.client import YooKassaClient
 from app.integrations.yookassa.exceptions import YooKassaError
-from app.workers.billing import run_daily_billing
 from app.workers.subscription_retry import retry_subscription_activations
 
 logger = logging.getLogger(__name__)
@@ -119,14 +118,6 @@ async def main() -> None:
             internal_squad_uuid=settings.remnawave_internal_squad_uuid,
         )
     )
-    billing_worker = asyncio.create_task(
-        run_daily_billing(
-            session_factory=session_factory,
-            bot=bot,
-            stop_event=stop_retry_worker,
-            remnawave_client=remnawave_client,
-        )
-    )
     logger.info("Starting VPN bot in long polling mode")
     try:
         await dispatcher.start_polling(
@@ -148,7 +139,7 @@ async def main() -> None:
     finally:
         logger.info("Shutting down bot resources")
         stop_retry_worker.set()
-        await asyncio.gather(retry_worker, billing_worker)
+        await retry_worker
         await bot.session.close()
         await storage.close()
         await redis_client.aclose()

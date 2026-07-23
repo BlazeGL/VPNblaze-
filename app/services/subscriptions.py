@@ -135,6 +135,9 @@ class SubscriptionService:
             subscription.traffic_limit_gb = order.traffic_limit_gb_snapshot
             subscription.is_unlimited_traffic = order.is_unlimited_traffic_snapshot
             subscription.device_limit = order.device_limit_snapshot
+            subscription.expiry_notice_3d_at = None
+            subscription.expiry_notice_1d_at = None
+            subscription.expired_notice_at = None
         await self.session.flush()
         return await self._provision(subscription, user)
 

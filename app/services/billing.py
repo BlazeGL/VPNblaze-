@@ -1,8 +1,6 @@
-import logging
 from dataclasses import dataclass
-from datetime import UTC, date, datetime
+from datetime import UTC, datetime
 from decimal import Decimal
-from typing import Protocol
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -10,9 +8,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.database.models import (
     BalanceTransaction,
     BalanceTransactionType,
-    ProvisioningStatus,
+    Order,
+    OrderPurpose,
+    OrderStatus,
     Subscription,
-    SubscriptionSource,
     SubscriptionStatus,
     User,
 )
@@ -21,119 +20,158 @@ from app.services.balance import (
     InsufficientBalanceError,
     normalize_money,
 )
-
-logger = logging.getLogger(__name__)
-DAILY_VPN_PRICE = Decimal("5.00")
-
-
-class RemnawaveBillingClient(Protocol):
-    async def disable_user(self, user_uuid: str) -> object: ...
-
-    async def enable_user(self, user_uuid: str) -> object: ...
+from app.services.promos import PromoService, PromoValidationError
+from app.services.subscriptions import SubscriptionService
 
 
 @dataclass(frozen=True)
 class BillingResult:
-    charged: bool
-    disabled: bool
+    purchased: bool
     already_processed: bool
+    amount: Decimal
+    balance_before: Decimal
+    balance_after: Decimal
+    shortfall: Decimal
+    order: Order
+    subscription: Subscription | None = None
     transaction: BalanceTransaction | None = None
 
 
+class BillingValidationError(ValueError):
+    pass
+
+
 class BillingService:
+    """Buy a fixed-term subscription from the shared user balance."""
+
     def __init__(
         self,
         session: AsyncSession,
-        remnawave_client: RemnawaveBillingClient | None = None,
+        subscription_service: SubscriptionService | None = None,
     ) -> None:
         self.session = session
-        self.remnawave_client = remnawave_client
+        self.subscription_service = subscription_service or SubscriptionService(
+            session
+        )
 
-    async def charge_subscription(
+    async def purchase_order(
         self,
-        subscription_id: object,
+        order_id: object,
         *,
-        billing_date: date | None = None,
+        user_id: int,
+        idempotency_key: str | None = None,
+        now: datetime | None = None,
+        locked_order: Order | None = None,
+        locked_user: User | None = None,
     ) -> BillingResult:
-        day = billing_date or datetime.now(UTC).date()
-        candidate = await self.session.scalar(
-            select(Subscription).where(Subscription.id == subscription_id)
-        )
-        if candidate is None:
-            return BillingResult(False, False, False)
-        user = await self.session.scalar(
-            select(User).where(User.id == candidate.user_id).with_for_update()
-        )
-        if user is None:
-            return BillingResult(False, False, False)
-        subscription = await self.session.scalar(
-            select(Subscription)
-            .where(Subscription.id == subscription_id)
-            .with_for_update()
-        )
-        if (
-            subscription is None
-            or subscription.status != SubscriptionStatus.active
-            or subscription.source_type == SubscriptionSource.trial
-        ):
-            return BillingResult(False, False, False)
+        moment = now or datetime.now(UTC)
+        order = locked_order
+        if order is None:
+            order = await self.session.scalar(
+                select(Order).where(Order.id == order_id).with_for_update()
+            )
+        if order is None or order.user_id != user_id:
+            raise BillingValidationError("order_not_found")
+        if order.purpose == OrderPurpose.wallet_topup:
+            raise BillingValidationError("not_subscription_order")
 
+        user = locked_user
+        if user is None:
+            user = await self.session.scalar(
+                select(User).where(User.id == user_id).with_for_update()
+            )
+        if user is None:
+            raise BillingValidationError("user_not_found")
+
+        amount = self._purchase_amount(order)
+        balance_before = normalize_money(user.balance)
+        if order.status == OrderStatus.completed:
+            subscription = await self.session.scalar(
+                select(Subscription).where(Subscription.user_id == user.id)
+            )
+            return BillingResult(
+                purchased=True,
+                already_processed=True,
+                amount=amount,
+                balance_before=balance_before,
+                balance_after=balance_before,
+                shortfall=Decimal("0.00"),
+                order=order,
+                subscription=subscription,
+            )
+        if order.status not in {
+            OrderStatus.pending,
+            OrderStatus.awaiting_payment,
+            OrderStatus.paid,
+            OrderStatus.processing,
+        }:
+            raise BillingValidationError("order_status")
+
+        key = idempotency_key or f"subscription-purchase:{order.id}"
+        try:
+            await PromoService(self.session).consume_for_paid_order(order)
+        except PromoValidationError as exc:
+            raise BillingValidationError(
+                f"promo_consumption_failed:{exc.reason}"
+            ) from exc
         try:
             change = await BalanceService(self.session).debit(
-                subscription.user_id,
-                amount=DAILY_VPN_PRICE,
-                transaction_type=BalanceTransactionType.daily_charge,
-                idempotency_key=f"daily:{subscription.id}:{day.isoformat()}",
-                reference_type="subscription",
-                reference_id=str(subscription.id),
+                user.id,
+                amount=amount,
+                transaction_type=BalanceTransactionType.subscription_purchase,
+                idempotency_key=key,
+                reference_type="order",
+                reference_id=str(order.id),
+                tariff_id=order.tariff_id,
+                order_id=order.id,
+                description=(
+                    f"Покупка подписки на {order.duration_days_snapshot} дней"
+                ),
                 locked_user=user,
             )
         except InsufficientBalanceError:
-            await self._disable(subscription)
-            return BillingResult(False, True, False)
+            current = normalize_money(user.balance)
+            return BillingResult(
+                purchased=False,
+                already_processed=False,
+                amount=amount,
+                balance_before=current,
+                balance_after=current,
+                shortfall=normalize_money(amount - current),
+                order=order,
+                subscription=None,
+            )
 
+        order.status = OrderStatus.processing
+        subscription = await self.subscription_service.extend_from_paid_order(
+            user, order, now=moment
+        )
+        if subscription.status != SubscriptionStatus.activation_failed:
+            order.status = OrderStatus.completed
+            order.completed_at = moment
+            order.failure_reason = None
+        else:
+            order.failure_reason = (
+                subscription.last_activation_error or "activation_failed"
+            )
+        await self.session.flush()
         return BillingResult(
-            charged=not change.already_applied,
-            disabled=False,
+            purchased=order.status == OrderStatus.completed,
             already_processed=change.already_applied,
+            amount=amount,
+            balance_before=change.transaction.balance_before,
+            balance_after=change.transaction.balance_after,
+            shortfall=Decimal("0.00"),
+            order=order,
+            subscription=subscription,
             transaction=change.transaction,
         )
 
-    async def reactivate(self, user_id: int) -> Subscription:
-        user = await self.session.scalar(
-            select(User).where(User.id == user_id).with_for_update()
-        )
-        subscription = await self.session.scalar(
-            select(Subscription)
-            .where(Subscription.user_id == user_id)
-            .with_for_update()
-        )
-        if user is None or subscription is None:
-            raise LookupError("subscription_not_found")
-        if normalize_money(user.balance) < DAILY_VPN_PRICE:
-            raise InsufficientBalanceError("insufficient_balance")
-        if subscription.remnawave_user_uuid and self.remnawave_client:
-            await self.remnawave_client.enable_user(
-                subscription.remnawave_user_uuid
-            )
-        subscription.status = SubscriptionStatus.active
-        subscription.provisioning_status = ProvisioningStatus.active
-        subscription.remnawave_status = "ACTIVE"
-        await self.session.flush()
-        return subscription
-
-    async def _disable(self, subscription: Subscription) -> None:
-        if subscription.remnawave_user_uuid and self.remnawave_client:
-            try:
-                await self.remnawave_client.disable_user(
-                    subscription.remnawave_user_uuid
-                )
-            except Exception:
-                logger.exception(
-                    "Could not disable Remnawave user for subscription %s",
-                    subscription.id,
-                )
-        subscription.status = SubscriptionStatus.disabled
-        subscription.provisioning_status = ProvisioningStatus.disabled
-        subscription.remnawave_status = "DISABLED"
-        await self.session.flush()
+    @staticmethod
+    def _purchase_amount(order: Order) -> Decimal:
+        original = normalize_money(order.original_amount or order.amount_snapshot)
+        discount = normalize_money(order.discount_amount or 0)
+        amount = normalize_money(original - discount)
+        if amount <= 0:
+            raise BillingValidationError("invalid_purchase_amount")
+        return amount

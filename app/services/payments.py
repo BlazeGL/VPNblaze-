@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.database.models import (
     BalanceTransactionType,
     Order,
+    OrderPurpose,
     OrderStatus,
     Payment,
     PaymentStatus,
@@ -25,6 +26,7 @@ from app.integrations.payments import (
 )
 from app.services.audit import add_audit_log, sanitize_details
 from app.services.balance import BalanceService
+from app.services.billing import BillingService
 from app.services.promos import PromoService, PromoValidationError
 from app.services.subscriptions import SubscriptionService
 
@@ -107,12 +109,23 @@ class PaymentService:
         if existing is not None:
             return existing
 
-        tariff = await self.session.get(Tariff, order.tariff_id)
-        if tariff is None:
-            raise PaymentValidationError("tariff_not_found")
         original = Decimal(order.original_amount or order.amount_snapshot)
         order.original_amount = original
-        if order.promo_code_id is not None:
+        tariff = (
+            await self.session.get(Tariff, order.tariff_id)
+            if order.tariff_id is not None
+            else None
+        )
+        if (
+            order.purpose != OrderPurpose.wallet_topup
+            and tariff is None
+        ):
+            raise PaymentValidationError("tariff_not_found")
+        if order.purpose == OrderPurpose.wallet_topup:
+            order.discount_amount = Decimal("0.00")
+            order.final_amount = original
+            order.bonus_days = 0
+        elif order.promo_code_id is not None:
             promo = await PromoService(self.session).get_by_code(
                 order.promo_snapshot_code or "", for_update=True
             )
@@ -266,7 +279,10 @@ class PaymentService:
             payment.provider_payload_sanitized = sanitize_details(sanitized_payload)
         if payment.status != PaymentStatus.paid:
             payment.status = mapped
-        if order.status == OrderStatus.completed:
+        if (
+            order.status == OrderStatus.completed
+            and payment.processed_at is not None
+        ):
             add_audit_log(
                 self.session,
                 action="payment_repeated_webhook",
@@ -325,49 +341,113 @@ class PaymentService:
             await self.session.flush()
             return PaymentProcessingResult(True, True, order, payment)
 
+        order_already_purchased = order.status == OrderStatus.completed
         payment.status = PaymentStatus.paid
         payment.paid_at = payment.paid_at or moment
-        order.status = OrderStatus.paid
         order.paid_at = order.paid_at or moment
-        order.status = OrderStatus.processing
+        if not order_already_purchased:
+            order.status = OrderStatus.processing
 
-        try:
-            await PromoService(self.session).consume_for_paid_order(order)
-        except PromoValidationError as exc:
-            failure = f"promo_consumption_failed:{exc.reason}"
-            order.failure_reason = failure
-            payment.failure_reason = failure
-            add_audit_log(
-                self.session,
-                action="payment_processing_error",
-                entity_type="payment",
-                entity_id=payment.id,
-                actor_user_id=order.user_id,
-                details={"reason": failure},
-            )
-            await self.session.flush()
-            return PaymentProcessingResult(
-                False, False, order, payment, failure_reason=failure
-            )
+        if order.purpose != OrderPurpose.wallet_topup:
+            try:
+                await PromoService(self.session).consume_for_paid_order(order)
+            except PromoValidationError as exc:
+                failure = f"promo_consumption_failed:{exc.reason}"
+                order.failure_reason = failure
+                payment.failure_reason = failure
+                add_audit_log(
+                    self.session,
+                    action="payment_processing_error",
+                    entity_type="payment",
+                    entity_id=payment.id,
+                    actor_user_id=order.user_id,
+                    details={"reason": failure},
+                )
+                await self.session.flush()
+                return PaymentProcessingResult(
+                    False, False, order, payment, failure_reason=failure
+                )
 
         user = await self.session.get(User, order.user_id)
         if user is None:
             raise PaymentValidationError("user_not_found")
-        topup = (
-            await BalanceService(self.session).credit(
-                user.id,
-                amount=payment.amount,
-                transaction_type=BalanceTransactionType.topup,
-                idempotency_key=f"payment:{payment.id}",
-                reference_type="payment",
-                reference_id=str(payment.id),
+        if user.balance is None:
+            user.balance = Decimal("0.00")
+        topup = await BalanceService(self.session).credit(
+            user.id,
+            amount=payment.amount,
+            transaction_type=BalanceTransactionType.topup,
+            idempotency_key=f"payment:{payment.id}",
+            reference_type="payment",
+            reference_id=str(payment.id),
+            locked_user=user,
+        )
+        if order.purpose == OrderPurpose.wallet_topup:
+            order.status = OrderStatus.completed
+            order.completed_at = moment
+            order.failure_reason = None
+            payment.processed_at = moment
+            payment.failure_reason = None
+            add_audit_log(
+                self.session,
+                action="balance_topup_succeeded",
+                entity_type="payment",
+                entity_id=payment.id,
+                actor_user_id=order.user_id,
+                details={
+                    "order_id": str(order.id),
+                    "amount": str(payment.amount),
+                    "currency": payment.currency,
+                },
             )
-            if user.balance is not None
-            else None
+            await self.session.flush()
+            return PaymentProcessingResult(
+                True,
+                False,
+                order,
+                payment,
+                balance_after=topup.transaction.balance_after if topup else None,
+            )
+
+        if order_already_purchased:
+            subscription = await self.subscription_service.get_for_update(user.id)
+            payment.processed_at = moment
+            payment.failure_reason = None
+            add_audit_log(
+                self.session,
+                action="payment_credited_after_balance_purchase",
+                entity_type="payment",
+                entity_id=payment.id,
+                actor_user_id=order.user_id,
+                details={
+                    "order_id": str(order.id),
+                    "amount": str(payment.amount),
+                    "currency": payment.currency,
+                },
+            )
+            await self.session.flush()
+            return PaymentProcessingResult(
+                True,
+                False,
+                order,
+                payment,
+                subscription=subscription,
+                balance_after=topup.transaction.balance_after,
+            )
+
+        purchase = await BillingService(
+            self.session, self.subscription_service
+        ).purchase_order(
+            order.id,
+            user_id=user.id,
+            idempotency_key=f"subscription-purchase:{order.id}",
+            now=moment,
+            locked_order=order,
+            locked_user=user,
         )
-        subscription = await self.subscription_service.extend_from_paid_order(
-            user, order, now=moment
-        )
+        subscription = purchase.subscription
+        if subscription is None:
+            raise PaymentValidationError("subscription_not_found")
         if subscription.status == SubscriptionStatus.activation_failed:
             failure = subscription.last_activation_error or "activation_failed"
             order.failure_reason = failure
@@ -388,7 +468,7 @@ class PaymentService:
                 payment,
                 subscription,
                 failure,
-                topup.transaction.balance_after if topup else None,
+                purchase.balance_after,
             )
 
         order.status = OrderStatus.completed
@@ -415,7 +495,5 @@ class PaymentService:
             order,
             payment,
             subscription=subscription,
-            balance_after=(
-                topup.transaction.balance_after if topup else None
-            ),
+            balance_after=purchase.balance_after,
         )
