@@ -173,26 +173,23 @@ async def test_repeated_startup_preserves_all_user_business_data() -> None:
     assert first is False
     assert second is False
     assert after == before
+    session.scalar.assert_not_awaited()
     session.add.assert_not_called()
     session.flush.assert_not_awaited()
 
 
 @pytest.mark.asyncio
-async def test_empty_database_gets_only_missing_99_ruble_tariff() -> None:
+async def test_empty_database_startup_does_not_create_a_tariff() -> None:
     session = MagicMock()
     session.scalar = AsyncMock(return_value=None)
     session.flush = AsyncMock()
 
     created = await ensure_initial_data(session)
 
-    assert created is True
-    tariff = session.add.call_args.args[0]
-    assert isinstance(tariff, Tariff)
-    assert tariff.price == Decimal("99.00")
-    assert tariff.name == "BlazeVPN — 30 дней"
-    assert tariff.duration_days == 30
-    assert tariff.traffic_limit_gb == 600
-    session.flush.assert_awaited_once()
+    assert created is False
+    session.scalar.assert_not_awaited()
+    session.add.assert_not_called()
+    session.flush.assert_not_awaited()
 
 
 @pytest.mark.asyncio

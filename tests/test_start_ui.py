@@ -8,10 +8,12 @@ import pytest
 from aiogram.enums import ParseMode
 from aiogram.types import FSInputFile
 
-from app.bot.handlers.start import START_BANNER_PATH, send_welcome
+from app.bot.handlers.start import START_BANNER_PATH, send_welcome, show_channel
 from app.bot.keyboards.start import (
     ACTIVATE_TRIAL_CALLBACK,
     BUY_SUBSCRIPTION_CALLBACK,
+    CHANNEL_CALLBACK,
+    CHANNEL_URL,
     MAIN_MENU_CALLBACK,
     MY_SUBSCRIPTION_CALLBACK,
     START_CONNECTION_CALLBACK,
@@ -19,9 +21,10 @@ from app.bot.keyboards.start import (
     USER_AGREEMENT_CALLBACK,
     build_connection_menu,
     build_main_menu,
+    channel_menu,
 )
 from app.bot.rendering import edit_text_or_caption
-from app.bot.texts.start import START_TEXT
+from app.bot.texts.start import CHANNEL_TEXT, START_TEXT
 
 
 def flatten(markup: object) -> list[object]:
@@ -44,14 +47,50 @@ def test_start_keyboard_has_requested_layout_and_callbacks() -> None:
         ["🚀 Начать подключение"],
         ["💳 Купить подписку", "📦 Тарифы"],
         ["❓ Помощь", "👤 Личный кабинет"],
+        ["📢 Наш канал"],
         ["📄 Пользовательское соглашение"],
     ]
     buttons = flatten(markup)
     assert buttons[0].callback_data == START_CONNECTION_CALLBACK  # type: ignore[attr-defined]
     assert buttons[1].callback_data == BUY_SUBSCRIPTION_CALLBACK  # type: ignore[attr-defined]
     assert buttons[2].callback_data == TARIFFS_CALLBACK  # type: ignore[attr-defined]
+    assert buttons[3].callback_data == "support_from_main"  # type: ignore[attr-defined]
+    assert buttons[3].url is None  # type: ignore[attr-defined]
     assert buttons[4].callback_data == MY_SUBSCRIPTION_CALLBACK  # type: ignore[attr-defined]
-    assert buttons[5].callback_data == USER_AGREEMENT_CALLBACK  # type: ignore[attr-defined]
+    assert buttons[5].callback_data == CHANNEL_CALLBACK  # type: ignore[attr-defined]
+    assert buttons[6].callback_data == USER_AGREEMENT_CALLBACK  # type: ignore[attr-defined]
+
+
+def test_channel_url_is_hidden_behind_the_requested_button() -> None:
+    markup = channel_menu()
+    channel_button = markup.inline_keyboard[0][0]
+    back_button = markup.inline_keyboard[1][0]
+
+    assert channel_button.text == "BlazeVPN - News"
+    assert channel_button.url == CHANNEL_URL
+    assert channel_button.callback_data is None
+    assert CHANNEL_URL not in CHANNEL_TEXT
+    assert back_button.callback_data == MAIN_MENU_CALLBACK
+
+
+@pytest.mark.asyncio
+async def test_channel_callback_renders_message_without_visible_url(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    callback = SimpleNamespace(
+        answer=AsyncMock(),
+        message=SimpleNamespace(),
+    )
+    renderer = AsyncMock()
+    monkeypatch.setattr("app.bot.handlers.start.edit_text_or_caption", renderer)
+
+    await show_channel(callback)  # type: ignore[arg-type]
+
+    callback.answer.assert_awaited_once()
+    renderer.assert_awaited_once()
+    assert renderer.await_args.args[1] == CHANNEL_TEXT
+    assert CHANNEL_URL not in renderer.await_args.args[1]
+    assert renderer.await_args.args[2].inline_keyboard[0][0].url == CHANNEL_URL
 
 
 def test_valid_agreement_url_creates_url_only_button() -> None:

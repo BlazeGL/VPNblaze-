@@ -22,7 +22,7 @@ PUBLIC_COMMANDS = [
 ]
 
 ADMIN_COMMANDS = [
-    BotCommand(command="edik", description="Панель администратора"),
+    BotCommand(command="admin", description="Панель администратора"),
     BotCommand(command="new_promo", description="Создать промокод"),
     BotCommand(command="ref_stats", description="Статистика рефералов"),
     BotCommand(command="sync_remnawave", description="Синхронизация VPN"),

@@ -8,7 +8,6 @@ from aiogram.enums import ChatType
 from app.bot.handlers.apps import _owned_subscription, show_short_link
 from app.bot.keyboards.main_menu import build_main_menu
 from app.bot.keyboards.subscription import (
-    SUPPORT_URL,
     activation_keyboard,
     back_keyboard,
     devices_keyboard,
@@ -105,17 +104,27 @@ def test_unknown_navigation_destination_is_rejected() -> None:
         back_keyboard("user_controlled_destination")
 
 
-def test_support_buttons_open_blaze_gl_profile() -> None:
+def test_support_buttons_use_internal_callbacks() -> None:
     main_support = next(
         button
         for button in flatten(build_main_menu())
-        if button.url == SUPPORT_URL  # type: ignore[attr-defined]
+        if button.text == "❓ Помощь"  # type: ignore[attr-defined]
     )
     key_support = flatten(activation_keyboard())[-2]
+    subscription_support = next(
+        button
+        for button in flatten(subscription_menu())
+        if button.text == "🆘 Поддержка"  # type: ignore[attr-defined]
+    )
 
-    assert SUPPORT_URL == "https://t.me/Blaze_GL"
-    assert main_support.url == SUPPORT_URL  # type: ignore[attr-defined]
-    assert key_support.url == SUPPORT_URL  # type: ignore[attr-defined]
+    assert main_support.callback_data == "support_from_main"  # type: ignore[attr-defined]
+    assert key_support.callback_data == "support_from_key"  # type: ignore[attr-defined]
+    assert (  # type: ignore[attr-defined]
+        subscription_support.callback_data == "support_from_subscription"
+    )
+    assert main_support.url is None  # type: ignore[attr-defined]
+    assert key_support.url is None  # type: ignore[attr-defined]
+    assert subscription_support.url is None  # type: ignore[attr-defined]
 
 
 @pytest.mark.asyncio

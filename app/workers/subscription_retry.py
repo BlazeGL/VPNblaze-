@@ -22,6 +22,7 @@ from app.database.models import (
 )
 from app.integrations.onlipay.client import OnliPayClient
 from app.integrations.remnawave.client import RemnawaveClient
+from app.integrations.remnawave.exceptions import RemnawaveError
 from app.services.activation_notifications import send_activation_notification
 from app.services.audit import add_audit_log
 from app.services.payments import PaymentService, PaymentValidationError
@@ -29,6 +30,16 @@ from app.services.remnawave import RemnawaveProvisioningService
 from app.services.remnawave_factory import build_subscription_service
 
 logger = logging.getLogger(__name__)
+
+
+def _renewal_offer_text(tariff: Tariff | None) -> str:
+    if tariff is None or not tariff.is_active:
+        return "\n\nВыберите актуальный вариант в разделе «Тарифы»."
+    return (
+        "\n\nСтоимость продления: "
+        f"<b>{money(tariff.price, tariff.currency)} "
+        f"за {tariff.duration_days} дней</b>"
+    )
 
 
 async def retry_subscription_activations(
@@ -40,6 +51,8 @@ async def retry_subscription_activations(
     remnawave_client: RemnawaveClient | None = None,
     subscription_cipher: SubscriptionUrlCipher | None = None,
     internal_squad_uuid: str | None = None,
+    russia_squad_uuid: str | None = None,
+    template_user_uuid: str | None = None,
     interval_seconds: int = 60,
 ) -> None:
     while not stop_event.is_set():
@@ -51,6 +64,8 @@ async def retry_subscription_activations(
                 remnawave_client,
                 subscription_cipher,
                 internal_squad_uuid,
+                russia_squad_uuid,
+                template_user_uuid,
             )
             if remnawave_client and subscription_cipher:
                 await _retry_subscriptions(
@@ -60,6 +75,8 @@ async def retry_subscription_activations(
                     remnawave_client,
                     subscription_cipher,
                     internal_squad_uuid,
+                    russia_squad_uuid,
+                    template_user_uuid,
                 )
             await _send_pending_activation_notifications(
                 session_factory,
@@ -83,6 +100,8 @@ async def _retry_paid_orders(
     client: RemnawaveClient | None,
     cipher: SubscriptionUrlCipher | None,
     squad: str | None,
+    russia_squad: str | None,
+    template_user_uuid: str | None = None,
 ) -> None:
     async with session_factory() as session:
         ids = list(
@@ -109,11 +128,38 @@ async def _retry_paid_orders(
                 order = await session.get(Order, payment.order_id)
                 if not order:
                     continue
+                subscription = await session.scalar(
+                    select(Subscription).where(
+                        Subscription.user_id == order.user_id,
+                        Subscription.order_id == order.id,
+                    )
+                )
+                if (
+                    subscription is not None
+                    and subscription.status
+                    in {
+                        SubscriptionStatus.pending,
+                        SubscriptionStatus.activation_failed,
+                    }
+                    and (
+                        subscription.activation_attempts >= 5
+                        or (
+                            subscription.next_retry_at is not None
+                            and subscription.next_retry_at > datetime.now(UTC)
+                        )
+                    )
+                ):
+                    continue
                 result = await PaymentService(
                     session,
                     OnliPayClient(),
                     subscription_service=build_subscription_service(
-                        session, client, cipher, squad
+                        session,
+                        client,
+                        cipher,
+                        squad,
+                        russia_squad,
+                        template_user_uuid,
                     ),
                 ).process_confirmed_payment(
                     provider_payment_id=provider_id,
@@ -153,14 +199,6 @@ async def _send_expiry_notifications(
 ) -> None:
     now = datetime.now(UTC)
     async with session_factory() as session:
-        renewal = (
-            await session.execute(
-                select(Tariff.price, Tariff.currency, Tariff.duration_days)
-                .where(Tariff.is_active.is_(True))
-                .order_by(Tariff.sort_order, Tariff.id)
-                .limit(1)
-            )
-        ).first()
         ids = list(
             await session.scalars(
                 select(Subscription.id)
@@ -176,15 +214,6 @@ async def _send_expiry_notifications(
                 .limit(100)
             )
         )
-    renewal_offer = (
-        (
-            "\n\nСтоимость продления: "
-            f"<b>{money(renewal.price, renewal.currency)} "
-            f"за {renewal.duration_days} дней</b>"
-        )
-        if renewal is not None
-        else ""
-    )
     for item_id in ids:
         async with session_factory() as session, session.begin():
             item = await session.scalar(
@@ -197,6 +226,12 @@ async def _send_expiry_notifications(
             user = await session.get(User, item.user_id)
             if user is None:
                 continue
+            tariff = (
+                await session.get(Tariff, item.tariff_id)
+                if item.tariff_id is not None
+                else None
+            )
+            renewal_offer = _renewal_offer_text(tariff)
             current = datetime.now(UTC)
             if item.expires_at <= current:
                 field = "expired_notice_at"
@@ -221,11 +256,18 @@ async def _send_expiry_notifications(
                 )
             if getattr(item, field) is not None:
                 continue
-            await bot.send_message(
-                user.telegram_id,
-                text,
-                parse_mode=ParseMode.HTML,
-            )
+            try:
+                await bot.send_message(
+                    user.telegram_id,
+                    text,
+                    parse_mode=ParseMode.HTML,
+                )
+            except Exception:
+                logger.exception(
+                    "Could not send expiry notification for subscription %s",
+                    item_id,
+                )
+                continue
             setattr(item, field, current)
 
 
@@ -236,6 +278,8 @@ async def _retry_subscriptions(
     client: RemnawaveClient,
     cipher: SubscriptionUrlCipher,
     squad: str | None,
+    russia_squad: str | None,
+    template_user_uuid: str | None = None,
 ) -> None:
     now = datetime.now(UTC)
     async with session_factory() as session:
@@ -257,7 +301,7 @@ async def _retry_subscriptions(
                 )
                 .limit(20)
             )
-        )
+    )
     for item_id in ids:
         activated = False
         async with session_factory() as session, session.begin():
@@ -272,7 +316,12 @@ async def _retry_subscriptions(
             if not user:
                 continue
             result = await RemnawaveProvisioningService(
-                session, client, cipher, squad
+                session,
+                client,
+                cipher,
+                squad,
+                russia_squad,
+                template_user_uuid,
             ).provision(item, user, source=item.source_type, order_id=item.order_id)
             attempts = item.activation_attempts
             if result.status == SubscriptionStatus.active:
@@ -298,9 +347,17 @@ async def _retry_subscriptions(
                 )
         elif attempts >= 5:
             for admin_id in admin_ids:
-                await bot.send_message(
-                    admin_id, f"⚠️ Исчерпаны попытки активации {str(item_id)[:8]}."
-                )
+                try:
+                    await bot.send_message(
+                        admin_id,
+                        f"⚠️ Исчерпаны попытки активации {str(item_id)[:8]}.",
+                    )
+                except Exception:
+                    logger.exception(
+                        "Could not notify admin %s about subscription %s",
+                        admin_id,
+                        item_id,
+                    )
 
 
 async def _send_pending_activation_notifications(
@@ -359,7 +416,7 @@ async def _disable_expired(
                 )
                 .limit(50)
             )
-        )
+    )
     for item_id in ids:
         async with session_factory() as session, session.begin():
             item = await session.scalar(
@@ -371,7 +428,15 @@ async def _disable_expired(
                 was_expired = item.status == SubscriptionStatus.expired
                 remote_disabled = False
                 if item.remnawave_user_uuid and client:
-                    await client.disable_user(item.remnawave_user_uuid)
+                    try:
+                        await client.disable_user(item.remnawave_user_uuid)
+                    except RemnawaveError:
+                        logger.exception(
+                            "Could not disable expired Remnawave user for "
+                            "subscription %s",
+                            item_id,
+                        )
+                        continue
                     item.remnawave_status = "DISABLED"
                     remote_disabled = True
                 item.status = SubscriptionStatus.expired

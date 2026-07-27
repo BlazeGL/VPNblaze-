@@ -42,7 +42,21 @@ class RemnawaveUser(RemnawaveModel):
     traffic_limit_strategy: TrafficLimitStrategy = Field(alias="trafficLimitStrategy")
     expire_at: datetime = Field(alias="expireAt")
     telegram_id: int | None = Field(default=None, alias="telegramId")
+    email: str | None = None
+    description: str | None = None
+    tag: str | None = None
     hwid_device_limit: int | None = Field(default=None, alias="hwidDeviceLimit")
+    external_squad_uuid: UUID | None = Field(default=None, alias="externalSquadUuid")
+    trojan_password: str | None = Field(default=None, alias="trojanPassword")
+    vless_uuid: UUID | None = Field(default=None, alias="vlessUuid")
+    ss_password: str | None = Field(default=None, alias="ssPassword")
+    last_triggered_threshold: int | None = Field(
+        default=None, alias="lastTriggeredThreshold"
+    )
+    sub_revoked_at: datetime | None = Field(default=None, alias="subRevokedAt")
+    last_traffic_reset_at: datetime | None = Field(
+        default=None, alias="lastTrafficResetAt"
+    )
     created_at: datetime = Field(alias="createdAt")
     updated_at: datetime = Field(alias="updatedAt")
     subscription_url: str = Field(alias="subscriptionUrl")
@@ -86,11 +100,17 @@ class CreateUserRequest(RemnawaveModel):
     )
     expire_at: datetime = Field(alias="expireAt")
     telegram_id: int | None = Field(default=None, alias="telegramId")
-    hwid_device_limit: int | None = Field(default=None, ge=1, alias="hwidDeviceLimit")
+    hwid_device_limit: int | None = Field(default=None, ge=0, alias="hwidDeviceLimit")
     active_internal_squads: list[UUID] | None = Field(
         default=None, alias="activeInternalSquads"
     )
     description: str | None = None
+    tag: str | None = Field(
+        default=None,
+        max_length=16,
+        pattern=r"^[A-Z0-9_]+$",
+    )
+    external_squad_uuid: UUID | None = Field(default=None, alias="externalSquadUuid")
 
     @field_validator("expire_at")
     @classmethod
@@ -111,10 +131,18 @@ class UpdateUserRequest(RemnawaveModel):
         default=None, alias="trafficLimitStrategy"
     )
     expire_at: datetime | None = Field(default=None, alias="expireAt")
-    hwid_device_limit: int | None = Field(default=None, ge=1, alias="hwidDeviceLimit")
+    hwid_device_limit: int | None = Field(default=None, ge=0, alias="hwidDeviceLimit")
     active_internal_squads: list[UUID] | None = Field(
         default=None, alias="activeInternalSquads"
     )
+    description: str | None = None
+    tag: str | None = Field(
+        default=None,
+        max_length=16,
+        pattern=r"^[A-Z0-9_]+$",
+    )
+    email: str | None = None
+    external_squad_uuid: UUID | None = Field(default=None, alias="externalSquadUuid")
 
     @field_validator("expire_at")
     @classmethod

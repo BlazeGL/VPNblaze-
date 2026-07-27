@@ -11,19 +11,21 @@ from aiogram.types import (
     InlineKeyboardMarkup,
     Message,
 )
+from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.bot.handlers.apps import (
     render_key,
     show_devices,
-    show_support_from_main,
 )
 from app.bot.handlers.bonuses import show_bonuses
 from app.bot.handlers.promos import enter_promo_from_menu
 from app.bot.handlers.start import show_user_agreement
+from app.bot.handlers.support import begin_support
 from app.bot.handlers.tariffs import WalletTopUp, show_tariffs
 from app.bot.handlers.trial import show_subscription
 from app.bot.keyboards.start import agreement_button
+from app.bot.keyboards.tariffs import money
 from app.bot.rendering import edit_text_or_caption
 from app.core.config import Settings
 from app.core.crypto import SubscriptionUrlCipher
@@ -256,10 +258,19 @@ async def help_command(message: Message) -> None:
 
 
 @router.message(Command("support", ignore_case=True))
-async def support_command(message: Message, settings: Settings) -> None:
-    await show_support_from_main(
-        _adapter(message, "support_from_main"),
-        settings,
+async def support_command(
+    message: Message,
+    state: FSMContext,
+    redis_client: Redis,
+    settings: Settings,
+) -> None:
+    if not await _private_only(message):
+        return
+    await begin_support(
+        message,
+        state=state,
+        redis_client=redis_client,
+        settings=settings,
     )
 
 
@@ -308,7 +319,9 @@ def _transaction_line(transaction: BalanceTransaction) -> str:
 def balance_keyboard(tariff: Tariff | None = None) -> InlineKeyboardMarkup:
     purchase_label = "💳 Купить подписку"
     if tariff is not None:
-        purchase_label = f"{purchase_label} за {_money(tariff.price)} ₽"
+        purchase_label = (
+            f"{purchase_label} за {money(tariff.price, tariff.currency)}"
+        )
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
@@ -364,7 +377,12 @@ async def show_balance(
             else []
         )
         tariffs = await TariffRepository(session).get_active()
-        tariff = tariffs[0] if tariffs else None
+        currencies = {item.currency for item in tariffs}
+        tariff = (
+            min(tariffs, key=lambda item: (item.price, item.id))
+            if tariffs and len(currencies) == 1
+            else None
+        )
     if user is None:
         await callback.answer("Сначала нажмите /start.", show_alert=True)
         return
@@ -375,11 +393,24 @@ async def show_balance(
     )
     tariff_summary = (
         (
-            "Стоимость подписки:\n"
-            f"<b>{_money(tariff.price)} ₽ за {tariff.duration_days} дней</b>\n\n"
+            (
+                "Тарифы начинаются от:\n"
+                if len(tariffs) > 1
+                else "Стоимость подписки:\n"
+            )
+            + f"<b>{money(tariff.price, tariff.currency)}"
+            + (
+                "</b>\n\n"
+                if len(tariffs) > 1
+                else f" за {tariff.duration_days} дней</b>\n\n"
+            )
         )
         if tariff is not None
-        else ""
+        else (
+            "Стоимость зависит от выбранного тарифа.\n\n"
+            if tariffs
+            else ""
+        )
     )
     text = (
         "💰 <b>Ваш баланс</b>\n\n"
@@ -394,7 +425,7 @@ async def show_balance(
     await edit_text_or_caption(
         callback.message,
         text,
-        balance_keyboard(tariff),
+        balance_keyboard(tariff if len(tariffs) == 1 else None),
         parse_mode=ParseMode.HTML,
     )
 

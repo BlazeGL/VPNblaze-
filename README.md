@@ -71,8 +71,8 @@ docker compose run --rm migrate alembic current
 ## Команды бота
 
 - `/start` — регистрация и главное меню;
-- `/edik` — основная команда админ-панели, доступная только `ADMIN_IDS`;
-- `/admin` — скрытый совместимый alias;
+- `/admin` — панель управления, доступная только `ADMIN_IDS`;
+- `/edik` — совместимый alias для прежних установок;
 - `/new_promo` — пошаговое создание промокода администратором.
 
 Trial и оплаченная подписка регистрируются локально через `SubscriptionService`.
@@ -90,8 +90,16 @@ docker compose logs --tail=100 migrate postgres redis
 
 Бот использует официальный REST API Remnawave и создаёт отдельного пользователя
 панели для каждого Telegram ID. Заполните `REMNAWAVE_API_TOKEN`,
-`REMNAWAVE_INTERNAL_SQUAD_UUID` и `SUBSCRIPTION_ENCRYPTION_KEY` в `.env`.
-Остальные параметры и безопасные значения по умолчанию приведены в
+`REMNAWAVE_INTERNAL_SQUAD_UUID`, `REMNAWAVE_TEMPLATE_USER_UUID` и
+`SUBSCRIPTION_ENCRYPTION_KEY` в `.env`. В
+`REMNAWAVE_TEMPLATE_USER_UUID` укажите UUID уже настроенного рабочего
+пользователя. Для каждого нового пользователя бот копирует из него лимит и
+стратегию трафика, лимит устройств, внутренние и внешнюю группы, тег и
+описание, а затем проверяет фактически сохранённые настройки.
+
+Личные поля шаблона — имя, Telegram ID, email, срок действия и ключи доступа —
+не копируются. Если UUID шаблона не задан, продолжает работать совместимый
+режим с `REMNAWAVE_RUSSIA_SQUAD_UUID`. Остальные параметры приведены в
 `.env.example`.
 
 API token создаётся в панели Remnawave в разделе `API Tokens`. UUID Internal
@@ -103,5 +111,5 @@ python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().d
 ```
 
 Администраторские команды: `/sync_remnawave`, `/grant_vpn`. Состояние интеграции
-доступно в `/edik` → `🌐 Remnawave`. При временной недоступности API бот
+доступно в `/admin` → `🌐 VPN-доступ`. При временной недоступности API бот
 продолжает работать, а оплаченные и trial-активации остаются в очереди повторов.

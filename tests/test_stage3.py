@@ -195,8 +195,22 @@ async def test_admin_has_edik_access() -> None:
     event = SimpleNamespace(from_user=SimpleNamespace(id=42))
     assert await AdminFilter()(event, {42}) is True
     message = SimpleNamespace(answer=AsyncMock())
-    await open_edik(message)
-    assert message.answer.await_args.args[0] == "Панель администратора"
+    state = SimpleNamespace(clear=AsyncMock())
+    session = session_mock()
+    session.scalar.side_effect = [12, 7, 2, Decimal("1499.50"), 1]
+    context = MagicMock()
+    context.__aenter__ = AsyncMock(return_value=session)
+    context.__aexit__ = AsyncMock(return_value=False)
+    session_factory = MagicMock(return_value=context)
+
+    await open_edik(message, state, session_factory)
+
+    text = message.answer.await_args.args[0]
+    assert text.startswith("⚙️ Панель управления")
+    assert "Пользователей: 12" in text
+    assert "активных подписок: 7" in text
+    assert "доход: 1499.50 ₽" in text
+    state.clear.assert_awaited_once()
 
 
 @pytest.mark.asyncio

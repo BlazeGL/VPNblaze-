@@ -63,6 +63,15 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             await app.state.remnawave_client.get_internal_squad(
                 settings.remnawave_internal_squad_uuid or ""
             )
+            if settings.remnawave_russia_squad_uuid:
+                await app.state.remnawave_client.get_internal_squad(
+                    settings.remnawave_russia_squad_uuid
+                )
+            if settings.remnawave_template_user_uuid:
+                await app.state.remnawave_client.get_user(
+                    settings.remnawave_template_user_uuid,
+                    operation="validate_new_user_template",
+                )
         except Exception as exc:
             logger.error("Remnawave API is unavailable; webhook stays up: %s", exc)
     app.state.bot = bot

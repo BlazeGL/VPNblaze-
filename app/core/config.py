@@ -6,12 +6,17 @@ from uuid import UUID
 from pydantic import Field, ValidationInfo, field_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
+from app.integrations.remnawave.enums import TrafficLimitStrategy
+
 DEFAULT_YOOKASSA_API_URL = "https://api.yookassa.ru/v3"
 DEFAULT_YOOKASSA_REQUEST_TIMEOUT = 15.0
 DEFAULT_REMNAWAVE_REQUEST_TIMEOUT = 15.0
 DEFAULT_REMNAWAVE_VERIFY_SSL = True
 DEFAULT_REMNAWAVE_MAX_RETRIES = 3
 DEFAULT_REMNAWAVE_RETRY_BASE_DELAY = 1.0
+REMNAWAVE_NEW_USER_TRAFFIC_LIMIT_BYTES = 600 * 1024**3
+REMNAWAVE_NEW_USER_TRAFFIC_LIMIT_STRATEGY = TrafficLimitStrategy.month
+REMNAWAVE_NEW_USER_HWID_DEVICE_LIMIT = 5
 
 EMPTY_VALUE_DEFAULTS: dict[str, object] = {
     "postgres_db": "vpn_bot",
@@ -63,6 +68,8 @@ class Settings(BaseSettings):
     remnawave_base_url: str | None = None
     remnawave_api_token: str = Field(min_length=1)
     remnawave_internal_squad_uuid: str | None = None
+    remnawave_russia_squad_uuid: str | None = None
+    remnawave_template_user_uuid: str | None = None
     remnawave_request_timeout: float = Field(
         default=DEFAULT_REMNAWAVE_REQUEST_TIMEOUT,
         gt=0,
@@ -84,6 +91,7 @@ class Settings(BaseSettings):
     linux_app_url: str | None = None
     user_agreement_url: str | None = None
     support_url: str = "https://t.me/Blaze_GL"
+    support_group_id: int | None = None
 
     @field_validator("admin_ids", mode="before")
     @classmethod
@@ -154,6 +162,19 @@ class Settings(BaseSettings):
             raise ValueError("SUPPORT_URL must be an HTTPS URL")
         return candidate
 
+    @field_validator("support_group_id", mode="before")
+    @classmethod
+    def validate_support_group_id(cls, value: object) -> int | None:
+        if value is None or (isinstance(value, str) and not value.strip()):
+            return None
+        try:
+            candidate = int(value)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("SUPPORT_GROUP_ID must be a numeric chat ID") from exc
+        if candidate >= 0:
+            raise ValueError("SUPPORT_GROUP_ID must be a negative supergroup ID")
+        return candidate
+
     @field_validator("yookassa_api_url", mode="before")
     @classmethod
     def validate_yookassa_api_url(cls, value: object) -> str:
@@ -197,6 +218,26 @@ class Settings(BaseSettings):
         except ValueError as exc:
             raise ValueError("REMNAWAVE_INTERNAL_SQUAD_UUID must be a UUID") from exc
 
+    @field_validator("remnawave_russia_squad_uuid", mode="before")
+    @classmethod
+    def validate_russia_squad_uuid(cls, value: object) -> object:
+        if value is None or (isinstance(value, str) and not value.strip()):
+            return None
+        try:
+            return str(UUID(str(value).strip()))
+        except ValueError as exc:
+            raise ValueError("REMNAWAVE_RUSSIA_SQUAD_UUID must be a UUID") from exc
+
+    @field_validator("remnawave_template_user_uuid", mode="before")
+    @classmethod
+    def validate_template_user_uuid(cls, value: object) -> object:
+        if value is None or (isinstance(value, str) and not value.strip()):
+            return None
+        try:
+            return str(UUID(str(value).strip()))
+        except ValueError as exc:
+            raise ValueError("REMNAWAVE_TEMPLATE_USER_UUID must be a UUID") from exc
+
     @property
     def database_url(self) -> str:
         return (
@@ -216,6 +257,8 @@ class Settings(BaseSettings):
             "REMNAWAVE_INTERNAL_SQUAD_UUID": self.remnawave_internal_squad_uuid,
             "SUBSCRIPTION_ENCRYPTION_KEY": self.subscription_encryption_key,
         }
+        if not self.remnawave_template_user_uuid:
+            values["REMNAWAVE_RUSSIA_SQUAD_UUID"] = self.remnawave_russia_squad_uuid
         return [name for name, value in values.items() if not value]
 
     @property

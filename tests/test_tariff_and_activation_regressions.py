@@ -81,6 +81,40 @@ def test_tariff_screen_contains_only_current_price_and_limits() -> None:
     ]
 
 
+def test_tariff_screen_escapes_admin_entered_html() -> None:
+    item = canonical_tariff()
+    item.name = "<b>& небезопасное имя"
+
+    text, _ = render_tariff_screen(item)
+
+    assert "&lt;b&gt;&amp; небезопасное имя" in text
+    assert "<b>& небезопасное имя" not in text
+
+
+def test_each_active_tariff_is_available_from_catalog_card() -> None:
+    monthly = canonical_tariff()
+    quarterly = Tariff(
+        id=2,
+        name="BlazeVPN — 90 дней",
+        duration_days=90,
+        price=Decimal("249.50"),
+        currency="RUB",
+        traffic_limit_gb=600,
+        is_unlimited_traffic=False,
+        device_limit=5,
+        is_active=True,
+    )
+
+    _, markup = render_tariff_screen(monthly, [monthly, quarterly])
+    buttons = [button for row in markup.inline_keyboard for button in row]
+
+    assert [button.text for button in buttons[:2]] == [
+        "• BlazeVPN — 30 дней · 99 ₽",
+        "BlazeVPN — 90 дней · 249.5 ₽",
+    ]
+    assert all(button.callback_data for button in buttons[:2])
+
+
 @pytest.mark.asyncio
 async def test_plans_command_reuses_tariffs_callback_renderer(
     monkeypatch: pytest.MonkeyPatch,
@@ -166,6 +200,7 @@ async def test_completed_provisioning_repairs_stale_pending_subscription() -> No
         MagicMock(),
         MagicMock(),
         "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
     ).provision(subscription, user)
 
     assert result.status == SubscriptionStatus.active

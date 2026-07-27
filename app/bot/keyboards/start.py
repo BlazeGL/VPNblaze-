@@ -16,6 +16,8 @@ PRIVACY_POLICY_CALLBACK = "legal_privacy_policy"
 REFUND_TERMS_CALLBACK = "legal_refund_terms"
 BONUSES_CALLBACK = "bonuses"
 COPY_REFERRAL_LINK_CALLBACK = "copy_referral_link"
+CHANNEL_CALLBACK = "official_channel"
+CHANNEL_URL = "https://t.me/blazeVPNgroup"
 
 
 def is_valid_agreement_url(url: str | None) -> bool:
@@ -61,7 +63,10 @@ def build_main_menu(
                 ),
             ],
             [
-                InlineKeyboardButton(text="❓ Помощь", url=support_url),
+                InlineKeyboardButton(
+                    text="❓ Помощь",
+                    callback_data="support_from_main",
+                ),
                 InlineKeyboardButton(
                     text="👤 Личный кабинет",
                     callback_data=MY_SUBSCRIPTION_CALLBACK,
@@ -77,12 +82,39 @@ def build_main_menu(
                 )
             ]
         )
+    rows.append(
+        [
+            InlineKeyboardButton(
+                text="📢 Наш канал",
+                callback_data=CHANNEL_CALLBACK,
+            )
+        ]
+    )
     rows.extend(
         [
             [agreement_button(user_agreement_url)],
         ]
     )
     return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def channel_menu() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="BlazeVPN - News",
+                    url=CHANNEL_URL,
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="⬅️ Главное меню",
+                    callback_data=MAIN_MENU_CALLBACK,
+                )
+            ],
+        ]
+    )
 
 
 def bonuses_menu(referral_link: str | None = None) -> InlineKeyboardMarkup:

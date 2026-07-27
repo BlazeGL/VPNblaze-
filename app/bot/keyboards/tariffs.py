@@ -9,9 +9,31 @@ def money(value: object, currency: str = "RUB") -> str:
     return f"{amount} ₽" if currency == "RUB" else f"{amount} {currency}"
 
 
-def build_tariff_card(tariff: Tariff) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
+def build_tariff_card(
+    tariff: Tariff,
+    tariffs: list[Tariff] | None = None,
+) -> InlineKeyboardMarkup:
+    rows: list[list[InlineKeyboardButton]] = []
+    if tariffs and len(tariffs) > 1:
+        for item in tariffs:
+            marker = "• " if item.id == tariff.id else ""
+            name = item.name if len(item.name) <= 32 else f"{item.name[:29]}..."
+            rows.append(
+                [
+                    InlineKeyboardButton(
+                        text=(
+                            f"{marker}{name} · "
+                            f"{money(item.price, item.currency)}"
+                        ),
+                        callback_data=TariffCallback(
+                            action="view",
+                            tariff_id=item.id,
+                        ).pack(),
+                    )
+                ]
+            )
+    rows.extend(
+        [
             [
                 InlineKeyboardButton(
                     text=f"💳 Купить за {money(tariff.price, tariff.currency)}",
@@ -23,6 +45,7 @@ def build_tariff_card(tariff: Tariff) -> InlineKeyboardMarkup:
             [InlineKeyboardButton(text="⬅️ Назад", callback_data="main_menu")],
         ]
     )
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def build_order(order: Order) -> InlineKeyboardMarkup:

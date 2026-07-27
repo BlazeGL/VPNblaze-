@@ -2,45 +2,22 @@ import asyncio
 import logging
 import os
 import subprocess
-from decimal import Decimal
 from pathlib import Path
 
-from sqlalchemy import select, text
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
-from app.database.models import Tariff
 from app.database.session import create_engine_and_session
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_TARIFF = {
-    "name": "BlazeVPN — 30 дней",
-    "description": None,
-    "duration_days": 30,
-    "price": Decimal("99.00"),
-    "currency": "RUB",
-    "traffic_limit_gb": 600,
-    "is_unlimited_traffic": False,
-    "device_limit": 3,
-    "is_active": True,
-    "sort_order": 10,
-}
 DEFAULT_STATE_FILE = "/var/lib/blazevpn-state/database-initialized"
 
 
 async def ensure_initial_data(session: AsyncSession) -> bool:
-    """Create defaults only for a genuinely empty installation.
-
-    Existing tariffs are business data. They must never be updated or duplicated
-    by deployments.
-    """
-    existing_tariff = await session.scalar(select(Tariff.id).limit(1))
-    if existing_tariff is not None:
-        return False
-    session.add(Tariff(**DEFAULT_TARIFF))
-    await session.flush()
-    return True
+    """Retain the startup hook without modifying application business data."""
+    return False
 
 
 async def database_has_application_schema(database_url: str) -> bool:
@@ -96,11 +73,11 @@ async def startup() -> None:
     engine, session_factory = create_engine_and_session(settings.database_url)
     try:
         async with session_factory() as session, session.begin():
-            created = await ensure_initial_data(session)
-            if created:
-                logger.info("Created the missing default tariff")
-            else:
-                logger.info("Existing tariffs left unchanged")
+            await ensure_initial_data(session)
+            logger.info(
+                "Tariffs and prices are managed through the admin panel; "
+                "startup left them unchanged"
+            )
     finally:
         await engine.dispose()
 

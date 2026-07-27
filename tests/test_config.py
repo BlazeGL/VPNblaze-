@@ -62,6 +62,30 @@ def test_user_agreement_url_accepts_only_https_without_spaces() -> None:
     assert invalid.user_agreement_url is None
 
 
+def test_support_group_id_accepts_only_numeric_supergroup_ids() -> None:
+    configured = Settings(
+        **REQUIRED_SETTINGS,
+        support_group_id="-1001234567890",
+        _env_file=None,
+    )
+    empty = Settings(
+        **REQUIRED_SETTINGS,
+        support_group_id="",
+        _env_file=None,
+    )
+
+    assert configured.support_group_id == -1001234567890
+    assert empty.support_group_id is None
+
+    for invalid in ("not-a-chat", "123456789"):
+        with pytest.raises(ValidationError):
+            Settings(
+                **REQUIRED_SETTINGS,
+                support_group_id=invalid,
+                _env_file=None,
+            )
+
+
 def test_empty_technical_settings_use_safe_defaults() -> None:
     settings = Settings(
         **REQUIRED_SETTINGS,

@@ -91,6 +91,8 @@ async def yookassa_webhook(
                     request.app.state.remnawave_client,
                     request.app.state.subscription_cipher,
                     settings.remnawave_internal_squad_uuid,
+                    settings.remnawave_russia_squad_uuid,
+                    settings.remnawave_template_user_uuid,
                 ),
             )
             if verified.status == NormalizedPaymentStatus.paid:

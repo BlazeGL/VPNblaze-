@@ -40,6 +40,8 @@ async def activate_trial(
     remnawave_client: RemnawaveClient | None = None,
     subscription_cipher: SubscriptionUrlCipher | None = None,
     remnawave_internal_squad_uuid: str | None = None,
+    remnawave_russia_squad_uuid: str | None = None,
+    remnawave_template_user_uuid: str | None = None,
     admin_ids: set[int] | None = None,
 ) -> None:
     if callback.message is None or callback.message.chat.type != ChatType.PRIVATE:
@@ -54,6 +56,8 @@ async def activate_trial(
                 remnawave_client,
                 subscription_cipher,
                 remnawave_internal_squad_uuid,
+                remnawave_russia_squad_uuid,
+                remnawave_template_user_uuid,
             )
             result = await TrialService(session, service).activate(
                 callback.from_user.id

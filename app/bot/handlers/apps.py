@@ -4,7 +4,6 @@ from aiogram import F, Router
 from aiogram.enums import ChatType, ParseMode
 from aiogram.types import (
     CallbackQuery,
-    InlineKeyboardButton,
     InlineKeyboardMarkup,
     Message,
 )
@@ -24,10 +23,8 @@ from app.bot.texts.subscription import (
     DEVICES_TEXT,
     INSTRUCTION_TEXT,
     PLATFORM_TEXTS,
-    SUPPORT_TEXT,
     activation_text,
     subscription_link_text,
-    support_text,
 )
 from app.core.config import Settings
 from app.core.crypto import SubscriptionUrlCipher
@@ -300,55 +297,4 @@ async def show_instruction(callback: CallbackQuery) -> None:
     if callback.message:
         await edit_or_send(
             callback.message, INSTRUCTION_TEXT, back_keyboard("back_to_key")
-        )
-
-
-@router.callback_query(F.data == "support_from_key")
-async def show_support_from_key(
-    callback: CallbackQuery,
-    settings: Settings | None = None,
-) -> None:
-    await callback.answer()
-    if callback.message:
-        await edit_or_send(
-            callback.message,
-            support_text(settings.support_url) if settings else SUPPORT_TEXT,
-            back_keyboard("back_to_key"),
-        )
-
-
-@router.callback_query(F.data == "support_from_main")
-async def show_support_from_main(
-    callback: CallbackQuery,
-    settings: Settings | None = None,
-) -> None:
-    await callback.answer()
-    if callback.message:
-        await edit_or_send(
-            callback.message,
-            support_text(settings.support_url) if settings else SUPPORT_TEXT,
-            back_keyboard("back_to_main"),
-        )
-
-
-@router.callback_query(F.data == "support_from_subscription")
-async def show_support_from_subscription(
-    callback: CallbackQuery,
-    settings: Settings | None = None,
-) -> None:
-    await callback.answer()
-    if callback.message:
-        markup = InlineKeyboardMarkup(
-            inline_keyboard=[
-                [
-                    InlineKeyboardButton(
-                        text="⬅️ Назад", callback_data="back_to_subscription"
-                    )
-                ]
-            ]
-        )
-        await edit_or_send(
-            callback.message,
-            support_text(settings.support_url) if settings else SUPPORT_TEXT,
-            markup,
         )

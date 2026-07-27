@@ -11,6 +11,7 @@ from app.bot.handlers.promos import PromoInput, enter_promo_from_menu
 from app.bot.handlers.user_commands import (
     PRIVATE_COMMANDS,
     _transaction_line,
+    balance_keyboard,
     key_command,
     profile_command,
 )
@@ -19,7 +20,7 @@ from app.bot.services.command_menu import (
     PUBLIC_COMMANDS,
     register_command_menu,
 )
-from app.database.models import BalanceTransactionType
+from app.database.models import BalanceTransactionType, Tariff
 
 
 def private_message(user_id: int = 123) -> MagicMock:
@@ -118,6 +119,25 @@ def test_balance_operation_is_rendered_for_user() -> None:
     assert _transaction_line(transaction) == "• −199 ₽ — Покупка подписки"  # type: ignore[arg-type]
 
 
+def test_balance_purchase_button_respects_tariff_currency() -> None:
+    tariff = Tariff(
+        id=9,
+        name="International",
+        duration_days=30,
+        price=Decimal("5.00"),
+        currency="USD",
+        traffic_limit_gb=100,
+        is_unlimited_traffic=False,
+        device_limit=2,
+        is_active=True,
+        sort_order=1,
+    )
+
+    button = balance_keyboard(tariff).inline_keyboard[0][0]
+
+    assert button.text == "💳 Купить подписку за 5 USD"
+
+
 def test_private_command_set_matches_security_requirement() -> None:
     assert PRIVATE_COMMANDS == {
         "key",
@@ -147,7 +167,7 @@ async def test_command_menu_has_public_and_admin_scopes() -> None:
     admin_names = {command.command for command in ADMIN_COMMANDS}
     assert admin_names.isdisjoint(public_names)
     assert admin_names == {
-        "edik",
+        "admin",
         "new_promo",
         "ref_stats",
         "sync_remnawave",

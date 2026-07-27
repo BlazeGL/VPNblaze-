@@ -1,6 +1,7 @@
 import logging
 import uuid
 from decimal import Decimal, InvalidOperation
+from html import escape
 
 from aiogram import F, Router
 from aiogram.enums import ChatType, ParseMode
@@ -57,15 +58,18 @@ def traffic(limit: int | None, unlimited: bool) -> str:
     return "Безлимит" if unlimited else f"{limit} ГБ"
 
 
-def render_tariff_screen(tariff: Tariff) -> tuple[str, InlineKeyboardMarkup]:
+def render_tariff_screen(
+    tariff: Tariff,
+    tariffs: list[Tariff] | None = None,
+) -> tuple[str, InlineKeyboardMarkup]:
     text = (
-        f"⚡ <b>{tariff.name}</b>\n\n"
+        f"⚡ <b>{escape(tariff.name)}</b>\n\n"
         f"💳 Стоимость: <b>{money(tariff.price, tariff.currency)}</b>\n"
         f"📅 Срок: <b>{tariff.duration_days} дней</b>\n"
         "🌐 Трафик: "
         f"<b>{traffic(tariff.traffic_limit_gb, tariff.is_unlimited_traffic)}</b>"
     )
-    return text, build_tariff_card(tariff)
+    return text, build_tariff_card(tariff, tariffs)
 
 
 @router.callback_query(
@@ -79,7 +83,7 @@ async def show_tariffs(
     await callback.answer()
     if callback.message:
         if tariffs:
-            text, markup = render_tariff_screen(tariffs[0])
+            text, markup = render_tariff_screen(tariffs[0], tariffs)
         else:
             text = (
                 "Сейчас нет доступных тарифов. Попробуйте позже или "
@@ -95,6 +99,32 @@ async def show_tariffs(
                     ]
                 ]
             )
+        await edit_text_or_caption(
+            callback.message,
+            text,
+            markup,
+            parse_mode=ParseMode.HTML,
+        )
+
+
+@router.callback_query(TariffCallback.filter(F.action == "view"))
+async def view_tariff(
+    callback: CallbackQuery,
+    callback_data: TariffCallback,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    async with session_factory() as session:
+        tariffs = await TariffRepository(session).get_active()
+    tariff = next(
+        (item for item in tariffs if item.id == callback_data.tariff_id),
+        None,
+    )
+    if tariff is None:
+        await callback.answer("Тариф недоступен", show_alert=True)
+        return
+    await callback.answer()
+    if callback.message:
+        text, markup = render_tariff_screen(tariff, tariffs)
         await edit_text_or_caption(
             callback.message,
             text,
@@ -146,6 +176,8 @@ async def purchase_from_balance(
     remnawave_client: RemnawaveClient | None = None,
     subscription_cipher: SubscriptionUrlCipher | None = None,
     remnawave_internal_squad_uuid: str | None = None,
+    remnawave_russia_squad_uuid: str | None = None,
+    remnawave_template_user_uuid: str | None = None,
 ) -> None:
     try:
         async with session_factory() as session, session.begin():
@@ -161,6 +193,8 @@ async def purchase_from_balance(
                     remnawave_client,
                     subscription_cipher,
                     remnawave_internal_squad_uuid,
+                    remnawave_russia_squad_uuid,
+                    remnawave_template_user_uuid,
                 ),
             ).purchase_order(
                 callback_data.order_id,
@@ -251,6 +285,8 @@ async def topup_shortfall(
     remnawave_client: RemnawaveClient | None = None,
     subscription_cipher: SubscriptionUrlCipher | None = None,
     remnawave_internal_squad_uuid: str | None = None,
+    remnawave_russia_squad_uuid: str | None = None,
+    remnawave_template_user_uuid: str | None = None,
 ) -> None:
     try:
         async with session_factory() as session, session.begin():
@@ -267,6 +303,8 @@ async def topup_shortfall(
                     remnawave_client,
                     subscription_cipher,
                     remnawave_internal_squad_uuid,
+                    remnawave_russia_squad_uuid,
+                    remnawave_template_user_uuid,
                 ),
             ).purchase_order(order.id, user_id=user.id)
             if purchase.purchased:
@@ -414,6 +452,8 @@ async def check_payment(
     remnawave_client: RemnawaveClient | None = None,
     subscription_cipher: SubscriptionUrlCipher | None = None,
     remnawave_internal_squad_uuid: str | None = None,
+    remnawave_russia_squad_uuid: str | None = None,
+    remnawave_template_user_uuid: str | None = None,
 ) -> None:
     if callback.message is None or callback.message.chat.type != ChatType.PRIVATE:
         await callback.answer(
@@ -453,6 +493,8 @@ async def check_payment(
                     remnawave_client,
                     subscription_cipher,
                     remnawave_internal_squad_uuid,
+                    remnawave_russia_squad_uuid,
+                    remnawave_template_user_uuid,
                 ),
             ).check_status(payment, user_id=user.id)
     except (ValueError, PaymentValidationError):

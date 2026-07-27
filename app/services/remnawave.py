@@ -1,11 +1,17 @@
 import logging
 import secrets
 import uuid
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import (
+    REMNAWAVE_NEW_USER_HWID_DEVICE_LIMIT,
+    REMNAWAVE_NEW_USER_TRAFFIC_LIMIT_BYTES,
+    REMNAWAVE_NEW_USER_TRAFFIC_LIMIT_STRATEGY,
+)
 from app.core.crypto import SubscriptionUrlCipher
 from app.database.models import (
     ProvisioningOperation,
@@ -38,6 +44,188 @@ from app.services.subscriptions import ProvisioningResult
 
 logger = logging.getLogger(__name__)
 RETRY_DELAYS = (60, 300, 900, 3600, 21600)
+NEW_USER_SETUP_MARKER = "[new_user_setup]"
+
+
+@dataclass(frozen=True, slots=True)
+class RemnawaveNewUserPolicy:
+    traffic_limit_bytes: int
+    traffic_limit_strategy: TrafficLimitStrategy
+    hwid_device_limit: int | None
+    active_internal_squads: tuple[uuid.UUID, ...]
+    external_squad_uuid: uuid.UUID | None
+    tag: str | None
+    description: str | None
+
+    @classmethod
+    def from_remote(cls, remote: RemnawaveUser) -> "RemnawaveNewUserPolicy":
+        return cls(
+            traffic_limit_bytes=remote.traffic_limit_bytes,
+            traffic_limit_strategy=remote.traffic_limit_strategy,
+            hwid_device_limit=remote.hwid_device_limit,
+            active_internal_squads=tuple(
+                squad.uuid for squad in remote.active_internal_squads
+            ),
+            external_squad_uuid=remote.external_squad_uuid,
+            tag=remote.tag,
+            description=remote.description,
+        )
+
+
+async def resolve_new_user_policy(
+    client: RemnawaveClient,
+    *,
+    template_user_uuid: str | None,
+    internal_squad_uuid: str | None,
+    russia_squad_uuid: str | None,
+    local_user_id: int | None = None,
+    remnawave_username: str | None = None,
+) -> RemnawaveNewUserPolicy:
+    if template_user_uuid:
+        try:
+            parsed_template_uuid = uuid.UUID(template_user_uuid)
+        except ValueError as exc:
+            raise RemnawaveConfigurationError(
+                "REMNAWAVE_TEMPLATE_USER_UUID is invalid"
+            ) from exc
+        template = await client.get_user(
+            parsed_template_uuid,
+            operation="get_new_user_template",
+            local_user_id=local_user_id,
+            remnawave_username=remnawave_username,
+        )
+        return RemnawaveNewUserPolicy.from_remote(template)
+
+    if not internal_squad_uuid:
+        raise RemnawaveConfigurationError(
+            "REMNAWAVE_INTERNAL_SQUAD_UUID is not configured"
+        )
+    if not russia_squad_uuid:
+        raise RemnawaveConfigurationError(
+            "REMNAWAVE_RUSSIA_SQUAD_UUID is not configured"
+        )
+    try:
+        primary_squad_uuid = uuid.UUID(internal_squad_uuid)
+    except ValueError as exc:
+        raise RemnawaveConfigurationError(
+            "REMNAWAVE_INTERNAL_SQUAD_UUID is invalid"
+        ) from exc
+    try:
+        fallback_russia_squad_uuid = uuid.UUID(russia_squad_uuid)
+    except ValueError as exc:
+        raise RemnawaveConfigurationError(
+            "REMNAWAVE_RUSSIA_SQUAD_UUID is invalid"
+        ) from exc
+    squads = tuple(dict.fromkeys((primary_squad_uuid, fallback_russia_squad_uuid)))
+    return RemnawaveNewUserPolicy(
+        traffic_limit_bytes=REMNAWAVE_NEW_USER_TRAFFIC_LIMIT_BYTES,
+        traffic_limit_strategy=REMNAWAVE_NEW_USER_TRAFFIC_LIMIT_STRATEGY,
+        hwid_device_limit=REMNAWAVE_NEW_USER_HWID_DEVICE_LIMIT,
+        active_internal_squads=squads,
+        external_squad_uuid=None,
+        tag=None,
+        description=None,
+    )
+
+
+def build_new_user_request(
+    policy: RemnawaveNewUserPolicy,
+    *,
+    username: str,
+    expire_at: datetime,
+    telegram_id: int | None,
+) -> CreateUserRequest:
+    return CreateUserRequest(
+        username=username,
+        status=RemnawaveUserStatus.active,
+        trafficLimitBytes=policy.traffic_limit_bytes,
+        trafficLimitStrategy=policy.traffic_limit_strategy,
+        expireAt=expire_at,
+        telegramId=telegram_id,
+        hwidDeviceLimit=policy.hwid_device_limit,
+        activeInternalSquads=list(policy.active_internal_squads),
+        externalSquadUuid=policy.external_squad_uuid,
+        tag=policy.tag,
+        description=policy.description,
+    )
+
+
+def build_new_user_update_request(
+    policy: RemnawaveNewUserPolicy,
+    *,
+    user_uuid: uuid.UUID,
+    expire_at: datetime,
+    telegram_id: int | None,
+) -> UpdateUserRequest:
+    # Nullable policy fields are intentionally passed explicitly. The PATCH client
+    # serializes explicitly set nulls so a retry can converge every supported field.
+    return UpdateUserRequest(
+        uuid=user_uuid,
+        status=RemnawaveUserStatus.active,
+        trafficLimitBytes=policy.traffic_limit_bytes,
+        trafficLimitStrategy=policy.traffic_limit_strategy,
+        expireAt=expire_at,
+        telegramId=telegram_id,
+        hwidDeviceLimit=policy.hwid_device_limit,
+        activeInternalSquads=list(policy.active_internal_squads),
+        externalSquadUuid=policy.external_squad_uuid,
+        tag=policy.tag,
+        description=policy.description,
+    )
+
+
+def validate_new_user_policy(
+    remote: RemnawaveUser,
+    policy: RemnawaveNewUserPolicy,
+    *,
+    expire_at: datetime,
+    telegram_id: int | None,
+) -> None:
+    if remote.status != RemnawaveUserStatus.active:
+        raise RemnawaveConfigurationError("Remnawave did not activate the new user")
+    if remote.telegram_id != telegram_id:
+        raise RemnawaveConfigurationError(
+            "Remnawave did not link the new user to the Telegram account"
+        )
+    # Remnawave parses dates through JavaScript Date and can return millisecond
+    # precision even when the local database stored microseconds.
+    if abs(remote.expire_at - expire_at) >= timedelta(seconds=1):
+        raise RemnawaveConfigurationError(
+            "Remnawave did not preserve the subscription expiration"
+        )
+    if remote.traffic_limit_bytes != policy.traffic_limit_bytes:
+        raise RemnawaveConfigurationError(
+            "Remnawave did not apply the new-user traffic limit"
+        )
+    if remote.traffic_limit_strategy != policy.traffic_limit_strategy:
+        raise RemnawaveConfigurationError(
+            "Remnawave did not apply the new-user traffic limit strategy"
+        )
+    if remote.hwid_device_limit != policy.hwid_device_limit:
+        raise RemnawaveConfigurationError(
+            "Remnawave did not apply the new-user device limit"
+        )
+    remote_squads = {squad.uuid for squad in remote.active_internal_squads}
+    if remote_squads != set(policy.active_internal_squads):
+        raise RemnawaveConfigurationError(
+            "Remnawave did not apply the exact new-user Internal Squads"
+        )
+    if remote.external_squad_uuid != policy.external_squad_uuid:
+        raise RemnawaveConfigurationError(
+            "Remnawave did not apply the new-user External Squad"
+        )
+    if remote.tag != policy.tag:
+        raise RemnawaveConfigurationError(
+            "Remnawave did not apply the new-user tag"
+        )
+    if remote.description != policy.description:
+        raise RemnawaveConfigurationError(
+            "Remnawave did not apply the new-user description"
+        )
+    if not remote.subscription_url:
+        raise RemnawaveConfigurationError(
+            "Remnawave did not return a subscription URL"
+        )
 
 
 class RemnawaveProvisioningService:
@@ -47,11 +235,15 @@ class RemnawaveProvisioningService:
         client: RemnawaveClient,
         cipher: SubscriptionUrlCipher,
         internal_squad_uuid: str | None,
+        russia_squad_uuid: str | None,
+        template_user_uuid: str | None = None,
     ) -> None:
         self.session = session
         self.client = client
         self.cipher = cipher
         self.internal_squad_uuid = internal_squad_uuid
+        self.russia_squad_uuid = russia_squad_uuid
+        self.template_user_uuid = template_user_uuid
 
     async def provision_user_subscription(
         self,
@@ -99,7 +291,6 @@ class RemnawaveProvisioningService:
                 None,
                 RemnawaveConfigurationError("REMNAWAVE_INTERNAL_SQUAD_UUID is invalid"),
             )
-
         operation = await self._get_or_create_operation(
             subscription, user, source or subscription.source_type, order_id
         )
@@ -138,17 +329,34 @@ class RemnawaveProvisioningService:
 
         try:
             had_uuid = bool(subscription.remnawave_user_uuid)
-            remote, created = await self._resolve_or_create(subscription, user)
+            remote, created, new_user_policy = await self._resolve_or_create(
+                subscription,
+                user,
+                operation,
+            )
             was_disabled = remote.status != RemnawaveUserStatus.active
-            self._save_remote_identity(subscription, remote)
-            await self.session.flush()
             remote = await self._configure_remote(
-                remote, subscription, user, squad_uuid, created=created
+                remote,
+                subscription,
+                user,
+                squad_uuid,
+                created=created,
+                new_user_policy=new_user_policy,
             )
             self._validate_owner(remote, subscription, user)
-            if squad_uuid not in {item.uuid for item in remote.active_internal_squads}:
+            if not created and squad_uuid not in {
+                item.uuid for item in remote.active_internal_squads
+            }:
                 raise RemnawaveConfigurationError(
                     "Remnawave did not assign the configured Internal Squad"
+                )
+            if created:
+                assert new_user_policy is not None
+                validate_new_user_policy(
+                    remote,
+                    new_user_policy,
+                    expire_at=subscription.expires_at,
+                    telegram_id=user.telegram_id,
                 )
             self._save_remote(subscription, remote, squad_uuid)
             operation.status = ProvisioningOperationStatus.completed
@@ -194,16 +402,23 @@ class RemnawaveProvisioningService:
             return await self._fail(subscription, user, operation, exc)
 
     async def _resolve_or_create(
-        self, subscription: Subscription, user: User
-    ) -> tuple[RemnawaveUser, bool]:
+        self,
+        subscription: Subscription,
+        user: User,
+        operation: ProvisioningOperation,
+    ) -> tuple[RemnawaveUser, bool, RemnawaveNewUserPolicy | None]:
         if subscription.remnawave_user_uuid:
             try:
-                return await self.client.get_user(
-                    subscription.remnawave_user_uuid,
-                    operation="resolve_user_by_uuid",
-                    local_user_id=user.id,
-                    remnawave_username=subscription.remnawave_username,
-                ), False
+                return (
+                    await self.client.get_user(
+                        subscription.remnawave_user_uuid,
+                        operation="resolve_user_by_uuid",
+                        local_user_id=user.id,
+                        remnawave_username=subscription.remnawave_username,
+                    ),
+                    False,
+                    None,
+                )
             except RemnawaveNotFoundError:
                 pass
         assert subscription.remnawave_username is not None
@@ -212,20 +427,31 @@ class RemnawaveProvisioningService:
                 subscription.remnawave_username, local_user_id=user.id
             )
             self._validate_owner(remote, subscription, user)
-            return remote, False
+            created = bool(
+                operation.last_error
+                and operation.last_error.startswith(NEW_USER_SETUP_MARKER)
+            )
+            policy = (
+                await self._new_user_policy(subscription, user) if created else None
+            )
+            return remote, created, policy
         except RemnawaveNotFoundError:
             pass
 
-        request = CreateUserRequest(
+        policy = await self._new_user_policy(subscription, user)
+        operation.last_error = NEW_USER_SETUP_MARKER
+        request = build_new_user_request(
+            policy,
             username=subscription.remnawave_username,
-            status=RemnawaveUserStatus.active,
-            trafficLimitStrategy=TrafficLimitStrategy.no_reset,
-            expireAt=subscription.expires_at,
+            expire_at=subscription.expires_at,
+            telegram_id=user.telegram_id,
         )
         try:
-            return await self.client.create_user(
-                request, local_user_id=user.id
-            ), True
+            return (
+                await self.client.create_user(request, local_user_id=user.id),
+                True,
+                policy,
+            )
         except (RemnawaveNetworkError, RemnawaveAPIError) as exc:
             if isinstance(exc, RemnawaveAPIError) and not (
                 exc.retryable or isinstance(exc, RemnawaveConflictError)
@@ -240,7 +466,24 @@ class RemnawaveProvisioningService:
             except RemnawaveNotFoundError:
                 raise exc from None
             self._validate_owner(remote, subscription, user)
-            return remote, False
+            created = not isinstance(exc, RemnawaveConflictError)
+            if not created:
+                operation.last_error = None
+            return remote, created, policy if created else None
+
+    async def _new_user_policy(
+        self,
+        subscription: Subscription,
+        user: User,
+    ) -> RemnawaveNewUserPolicy:
+        return await resolve_new_user_policy(
+            self.client,
+            template_user_uuid=self.template_user_uuid,
+            internal_squad_uuid=self.internal_squad_uuid,
+            russia_squad_uuid=self.russia_squad_uuid,
+            local_user_id=user.id,
+            remnawave_username=subscription.remnawave_username,
+        )
 
     async def _configure_remote(
         self,
@@ -250,15 +493,36 @@ class RemnawaveProvisioningService:
         squad_uuid: uuid.UUID,
         *,
         created: bool,
+        new_user_policy: RemnawaveNewUserPolicy | None,
     ) -> RemnawaveUser:
         context = {
             "local_user_id": user.id,
             "remnawave_username": subscription.remnawave_username,
         }
+        if created:
+            assert new_user_policy is not None
+            remote = await self.client.update_user(
+                build_new_user_update_request(
+                    new_user_policy,
+                    user_uuid=remote.uuid,
+                    expire_at=subscription.expires_at,
+                    telegram_id=user.telegram_id,
+                ),
+                operation="converge_new_user_policy",
+                **context,
+            )
+            return await self.client.get_user(
+                remote.uuid,
+                operation="verify_new_user",
+                **context,
+            )
+        desired_squads = [item.uuid for item in remote.active_internal_squads]
+        if squad_uuid not in desired_squads:
+            desired_squads.append(squad_uuid)
         remote = await self.client.update_user(
             UpdateUserRequest(
                 uuid=remote.uuid,
-                activeInternalSquads=[squad_uuid],
+                activeInternalSquads=desired_squads,
             ),
             operation="assign_internal_squad",
             **context,
@@ -284,7 +548,7 @@ class RemnawaveProvisioningService:
                 uuid=remote.uuid,
                 status=RemnawaveUserStatus.active,
                 telegramId=user.telegram_id,
-                expireAt=None if created else subscription.expires_at,
+                expireAt=subscription.expires_at,
             ),
             operation="set_user_identity",
             **context,
@@ -314,16 +578,6 @@ class RemnawaveProvisioningService:
             and str(remote.uuid) != subscription.remnawave_user_uuid
         ):
             raise RemnawaveConflictError("Remnawave UUID ownership conflict")
-
-    @staticmethod
-    def _save_remote_identity(
-        subscription: Subscription, remote: RemnawaveUser
-    ) -> None:
-        subscription.remnawave_user_uuid = str(remote.uuid)
-        subscription.external_user_uuid = str(remote.uuid)
-        subscription.remnawave_short_uuid = remote.short_uuid
-        subscription.remnawave_status = remote.status.value
-        subscription.remnawave_created_at = remote.created_at
 
     def _save_remote(
         self, subscription: Subscription, remote: RemnawaveUser, squad_uuid: uuid.UUID
@@ -411,7 +665,12 @@ class RemnawaveProvisioningService:
         subscription.next_retry_at = next_retry
         if operation is not None:
             operation.status = ProvisioningOperationStatus.failed
-            operation.last_error = error
+            operation.last_error = (
+                f"{NEW_USER_SETUP_MARKER} {error}"
+                if operation.last_error
+                and operation.last_error.startswith(NEW_USER_SETUP_MARKER)
+                else error
+            )
             operation.next_retry_at = next_retry
         add_audit_log(
             self.session,

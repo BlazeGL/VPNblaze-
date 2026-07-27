@@ -17,11 +17,25 @@ def build_subscription_service(
     client: RemnawaveClient | None,
     cipher: SubscriptionUrlCipher | None,
     internal_squad_uuid: str | None,
+    russia_squad_uuid: str | None,
+    template_user_uuid: str | None = None,
 ) -> SubscriptionService:
-    if client is None or cipher is None or not internal_squad_uuid:
+    if (
+        client is None
+        or cipher is None
+        or not internal_squad_uuid
+        or (not template_user_uuid and not russia_squad_uuid)
+    ):
         return SubscriptionService(
             session,
             UnavailableSubscriptionAdapter("Remnawave provisioning is not configured"),
         )
-    service = RemnawaveProvisioningService(session, client, cipher, internal_squad_uuid)
+    service = RemnawaveProvisioningService(
+        session,
+        client,
+        cipher,
+        internal_squad_uuid,
+        russia_squad_uuid,
+        template_user_uuid,
+    )
     return SubscriptionService(session, RemnawaveSubscriptionAdapter(service))

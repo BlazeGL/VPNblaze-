@@ -49,7 +49,8 @@ def activation_keyboard() -> InlineKeyboardMarkup:
             ],
             [
                 InlineKeyboardButton(
-                    text="🆘 Поддержка", url=SUPPORT_URL
+                    text="🆘 Поддержка",
+                    callback_data="support_from_key",
                 ),
                 InlineKeyboardButton(text="🏠 Главное меню", callback_data="main_menu"),
             ],

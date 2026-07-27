@@ -7,16 +7,21 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import CallbackQuery, Message
 from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.bot.callbacks import PromoAdminCallback
 from app.bot.filters import AdminFilter
 from app.bot.keyboards.admin import (
+    admin_navigation,
     promo_admin_menu,
     promo_confirm_keyboard,
+    promo_list_menu,
     promo_scope_keyboard,
+    promo_tariff_selection,
     promo_type_keyboard,
 )
+from app.bot.rendering import edit_text_or_caption
 from app.database.models import PromoCode, PromoDiscountType, Tariff
 from app.database.repositories import UserRepository
 from app.services.promos import (
@@ -26,6 +31,32 @@ from app.services.promos import (
 )
 
 router = Router(name=__name__)
+MAX_NUMERIC_10_2 = Decimal("99999999.99")
+MAX_DATABASE_INTEGER = 2_147_483_647
+PROMO_PAGE_SIZE = 10
+
+
+def decimal_text(value: Decimal) -> str:
+    rendered = format(value, "f")
+    return rendered.rstrip("0").rstrip(".") if "." in rendered else rendered
+
+
+def promo_is_current(promo: PromoCode, *, now: datetime | None = None) -> bool:
+    current = now or datetime.now(UTC)
+
+    def as_utc(value: datetime) -> datetime:
+        return (
+            value.replace(tzinfo=UTC)
+            if value.tzinfo is None
+            else value.astimezone(UTC)
+        )
+
+    return (
+        promo.is_active
+        and (promo.valid_from is None or as_utc(promo.valid_from) <= current)
+        and (promo.valid_until is None or as_utc(promo.valid_until) > current)
+        and (promo.max_uses is None or promo.uses_count < promo.max_uses)
+    )
 
 
 class PromoForm(StatesGroup):
@@ -63,7 +94,10 @@ async def begin_form(
     await state.set_state(PromoForm.code)
     target = event if isinstance(event, Message) else event.message
     if target:
-        await target.answer("Введите код промокода:")
+        await target.answer(
+            "Введите код промокода:",
+            reply_markup=admin_navigation("promos"),
+        )
 
 
 @router.message(Command("new_promo"), AdminFilter())
@@ -93,19 +127,75 @@ async def new_promo_callback(
 @router.callback_query(PromoAdminCallback.filter(F.action == "list"), AdminFilter())
 async def list_promos(
     callback: CallbackQuery,
+    callback_data: PromoAdminCallback,
+    state: FSMContext,
     session_factory: async_sessionmaker[AsyncSession],
 ) -> None:
-    async with session_factory() as session:
-        count = await session.scalar(select(func.count(PromoCode.id))) or 0
+    await state.clear()
+    try:
+        requested_page = max(0, int(callback_data.value or "0"))
+    except ValueError:
+        requested_page = 0
     await callback.answer()
     if callback.message:
-        await callback.message.edit_text(
-            f"Промокоды: {count}", reply_markup=promo_admin_menu()
+        await render_promo_list(
+            callback.message,
+            session_factory,
+            page=requested_page,
         )
+
+
+async def render_promo_list(
+    message: Message,
+    session_factory: async_sessionmaker[AsyncSession],
+    *,
+    page: int,
+) -> None:
+    """Render the promo list from both the compact menu and pagination."""
+    async with session_factory() as session:
+        total = await session.scalar(select(func.count(PromoCode.id))) or 0
+        total_pages = max(1, (total + PROMO_PAGE_SIZE - 1) // PROMO_PAGE_SIZE)
+        page = min(max(0, page), total_pages - 1)
+        promos = list(
+            await session.scalars(
+                select(PromoCode)
+                .order_by(PromoCode.created_at.desc(), PromoCode.code)
+                .offset(page * PROMO_PAGE_SIZE)
+                .limit(PROMO_PAGE_SIZE)
+            )
+        )
+    lines = []
+    current = datetime.now(UTC)
+    for promo in promos:
+        if promo.discount_type == PromoDiscountType.percent:
+            benefit = f"−{decimal_text(promo.discount_value)}%"
+        elif promo.discount_type == PromoDiscountType.fixed:
+            benefit = f"−{decimal_text(promo.discount_value)} ₽"
+        else:
+            benefit = f"+{promo.bonus_days} дней"
+        usage_limit = promo.max_uses if promo.max_uses is not None else "∞"
+        lines.append(
+            f"{'✅' if promo_is_current(promo, now=current) else '⏸'} "
+            f"{promo.code} · "
+            f"{benefit} · {promo.uses_count}/{usage_limit}"
+        )
+    await edit_text_or_caption(
+        message,
+        f"🎟 Промокоды · страница {page + 1}/{total_pages}\n\n"
+        + ("\n".join(lines) if lines else "Промокодов пока нет."),
+        promo_list_menu(page, total_pages),
+    )
 
 
 @router.callback_query(PromoAdminCallback.filter(F.action == "cancel"), AdminFilter())
 async def cancel_promo_form(callback: CallbackQuery, state: FSMContext) -> None:
+    promo_states = {item.state for item in PromoForm.__all_states__}
+    if await state.get_state() not in promo_states:
+        await callback.answer(
+            "Эта кнопка устарела. Откройте раздел заново.",
+            show_alert=True,
+        )
+        return
     await state.clear()
     await callback.answer("Создание отменено")
     if callback.message:
@@ -161,7 +251,10 @@ async def promo_type_step(
             if discount_type == PromoDiscountType.bonus_days
             else "Введите размер скидки:"
         )
-        await callback.message.answer(prompt)
+        await callback.message.answer(
+            prompt,
+            reply_markup=admin_navigation("promos"),
+        )
 
 
 @router.message(PromoForm.value, AdminFilter())
@@ -170,9 +263,17 @@ async def promo_value_step(message: Message, state: FSMContext) -> None:
     discount_type = PromoDiscountType(data["discount_type"])
     try:
         value = Decimal((message.text or "").replace(",", "."))
-        if value <= 0 or value.as_tuple().exponent < -2:
+        if (
+            not value.is_finite()
+            or value <= 0
+            or value > MAX_NUMERIC_10_2
+            or value.as_tuple().exponent < -2
+        ):
             raise InvalidOperation
-        if discount_type == PromoDiscountType.percent and value > 100:
+        if (
+            discount_type == PromoDiscountType.percent
+            and not Decimal("1") <= value <= Decimal("100")
+        ):
             raise InvalidOperation
         if (
             discount_type == PromoDiscountType.bonus_days
@@ -205,13 +306,14 @@ async def promo_scope_step(
     state: FSMContext,
     session_factory: async_sessionmaker[AsyncSession],
 ) -> None:
-    await callback.answer()
     if callback_data.value == "all":
+        await callback.answer()
         await state.update_data(tariff_ids=None)
         await state.set_state(PromoForm.max_uses)
         if callback.message:
             await callback.message.answer(
-                "Максимальное количество использований или «без ограничений»:"
+                "Максимальное количество использований или «без ограничений»:",
+                reply_markup=admin_navigation("promos"),
             )
         return
     async with session_factory() as session:
@@ -221,10 +323,78 @@ async def promo_scope_step(
     if not tariffs:
         await callback.answer("Тарифы не найдены", show_alert=True)
         return
+    await callback.answer()
+    await state.update_data(selected_tariff_ids=[])
     await state.set_state(PromoForm.tariff_ids)
     if callback.message:
-        listing = "\n".join(f"{item.id}: {item.name}" for item in tariffs)
-        await callback.message.answer(f"Введите ID тарифов через запятую:\n{listing}")
+        await callback.message.answer(
+            "Отметьте тарифы, для которых действует промокод:",
+            reply_markup=promo_tariff_selection(tariffs, set()),
+        )
+
+
+@router.callback_query(
+    PromoForm.tariff_ids,
+    PromoAdminCallback.filter(F.action == "tariff"),
+    AdminFilter(),
+)
+async def promo_tariff_toggle(
+    callback: CallbackQuery,
+    callback_data: PromoAdminCallback,
+    state: FSMContext,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    try:
+        tariff_id = int(callback_data.value)
+        if tariff_id <= 0:
+            raise ValueError
+    except ValueError:
+        await callback.answer("Тариф не найден", show_alert=True)
+        return
+    async with session_factory() as session:
+        tariffs = list(
+            await session.scalars(select(Tariff).order_by(Tariff.sort_order, Tariff.id))
+        )
+    available_ids = {item.id for item in tariffs}
+    if tariff_id not in available_ids:
+        await callback.answer("Тариф не найден", show_alert=True)
+        return
+    data = await state.get_data()
+    selected = set(data.get("selected_tariff_ids", []))
+    if tariff_id in selected:
+        selected.remove(tariff_id)
+    else:
+        selected.add(tariff_id)
+    await state.update_data(selected_tariff_ids=sorted(selected))
+    await callback.answer()
+    if callback.message:
+        await callback.message.edit_reply_markup(
+            reply_markup=promo_tariff_selection(tariffs, selected)
+        )
+
+
+@router.callback_query(
+    PromoForm.tariff_ids,
+    PromoAdminCallback.filter(F.action == "tariffs_done"),
+    AdminFilter(),
+)
+async def promo_tariffs_done(
+    callback: CallbackQuery,
+    state: FSMContext,
+) -> None:
+    data = await state.get_data()
+    selected = sorted(set(data.get("selected_tariff_ids", [])))
+    if not selected:
+        await callback.answer("Выберите хотя бы один тариф", show_alert=True)
+        return
+    await state.update_data(tariff_ids=selected)
+    await state.set_state(PromoForm.max_uses)
+    await callback.answer()
+    if callback.message:
+        await callback.message.answer(
+            "Максимальное количество использований или «без ограничений»:",
+            reply_markup=admin_navigation("promos"),
+        )
 
 
 @router.message(PromoForm.tariff_ids, AdminFilter())
@@ -251,7 +421,10 @@ async def promo_tariffs_step(
         return
     await state.update_data(tariff_ids=tariff_ids)
     await state.set_state(PromoForm.max_uses)
-    await message.answer("Максимальное количество использований или «без ограничений»:")
+    await message.answer(
+        "Максимальное количество использований или «без ограничений»:",
+        reply_markup=admin_navigation("promos"),
+    )
 
 
 @router.message(PromoForm.max_uses, AdminFilter())
@@ -262,28 +435,34 @@ async def promo_max_uses_step(message: Message, state: FSMContext) -> None:
     else:
         try:
             value = int(text)
-            if value <= 0:
+            if value <= 0 or value > MAX_DATABASE_INTEGER:
                 raise ValueError
         except ValueError:
             await message.answer("Введите целое число больше 0 или «без ограничений».")
             return
     await state.update_data(max_uses=value)
     await state.set_state(PromoForm.per_user_limit)
-    await message.answer("Лимит использований на одного пользователя:")
+    await message.answer(
+        "Лимит использований на одного пользователя:",
+        reply_markup=admin_navigation("promos"),
+    )
 
 
 @router.message(PromoForm.per_user_limit, AdminFilter())
 async def promo_per_user_step(message: Message, state: FSMContext) -> None:
     try:
         value = int(message.text or "")
-        if value <= 0:
+        if value <= 0 or value > MAX_DATABASE_INTEGER:
             raise ValueError
     except ValueError:
         await message.answer("Введите целое число больше 0.")
         return
     await state.update_data(per_user_limit=value)
     await state.set_state(PromoForm.minimum_amount)
-    await message.answer("Минимальная сумма заказа или «-», чтобы пропустить:")
+    await message.answer(
+        "Минимальная сумма заказа или «-», чтобы пропустить:",
+        reply_markup=admin_navigation("promos"),
+    )
 
 
 @router.message(PromoForm.minimum_amount, AdminFilter())
@@ -294,7 +473,12 @@ async def promo_minimum_step(message: Message, state: FSMContext) -> None:
     else:
         try:
             parsed = Decimal(text.replace(",", "."))
-            if parsed < 0 or parsed.as_tuple().exponent < -2:
+            if (
+                not parsed.is_finite()
+                or parsed < 0
+                or parsed > MAX_NUMERIC_10_2
+                or parsed.as_tuple().exponent < -2
+            ):
                 raise InvalidOperation
             value = str(parsed)
         except InvalidOperation:
@@ -302,7 +486,10 @@ async def promo_minimum_step(message: Message, state: FSMContext) -> None:
             return
     await state.update_data(minimum_order_amount=value)
     await state.set_state(PromoForm.valid_from)
-    await message.answer("Дата начала в UTC (ДД.ММ.ГГГГ ЧЧ:ММ) или «сразу»:")
+    await message.answer(
+        "Дата начала в UTC (ДД.ММ.ГГГГ ЧЧ:ММ) или «сразу»:",
+        reply_markup=admin_navigation("promos"),
+    )
 
 
 def parse_datetime(value: str) -> datetime:
@@ -322,7 +509,10 @@ async def promo_valid_from_step(message: Message, state: FSMContext) -> None:
             return
     await state.update_data(valid_from=value)
     await state.set_state(PromoForm.valid_until)
-    await message.answer("Дата окончания в UTC (ДД.ММ.ГГГГ ЧЧ:ММ) или «бессрочно»:")
+    await message.answer(
+        "Дата окончания в UTC (ДД.ММ.ГГГГ ЧЧ:ММ) или «бессрочно»:",
+        reply_markup=admin_navigation("promos"),
+    )
 
 
 @router.message(PromoForm.valid_until, AdminFilter())
@@ -413,10 +603,17 @@ async def create_promo(
     except PromoValidationError as exc:
         await callback.answer(f"Не удалось создать: {exc.reason}", show_alert=True)
         return
+    except IntegrityError:
+        await state.clear()
+        await callback.answer(
+            "Промокод с таким кодом уже существует. Откройте форму заново.",
+            show_alert=True,
+        )
+        return
     await state.clear()
     type_text = {
-        PromoDiscountType.percent: f"скидка {promo.discount_value.normalize()}%",
-        PromoDiscountType.fixed: f"скидка {promo.discount_value.normalize()} ₽",
+        PromoDiscountType.percent: f"скидка {decimal_text(promo.discount_value)}%",
+        PromoDiscountType.fixed: f"скидка {decimal_text(promo.discount_value)} ₽",
         PromoDiscountType.bonus_days: f"+{promo.bonus_days} дней",
     }[promo.discount_type]
     until = (
@@ -435,6 +632,14 @@ async def create_promo(
             f"Действует до: {until}",
             reply_markup=promo_admin_menu(),
         )
+
+
+@router.callback_query(PromoAdminCallback.filter(), AdminFilter())
+async def stale_promo_admin_callback(callback: CallbackQuery) -> None:
+    await callback.answer(
+        "Эта кнопка устарела. Откройте раздел заново.",
+        show_alert=True,
+    )
 
 
 @router.callback_query(PromoAdminCallback.filter())

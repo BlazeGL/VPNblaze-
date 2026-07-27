@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.bot.keyboards.start import (
     BACK_TO_MAIN_CALLBACK,
+    CHANNEL_CALLBACK,
     MAIN_MENU_CALLBACK,
     PRIVACY_POLICY_CALLBACK,
     REFUND_TERMS_CALLBACK,
@@ -18,11 +19,13 @@ from app.bot.keyboards.start import (
     agreement_menu,
     build_connection_menu,
     build_main_menu,
+    channel_menu,
     legal_page_menu,
 )
 from app.bot.keyboards.subscription import SUPPORT_URL
 from app.bot.rendering import edit_text_or_caption
 from app.bot.texts.start import (
+    CHANNEL_TEXT,
     CONNECTION_MENU_TEXT,
     PRIVACY_POLICY_TEXT,
     REFUND_TERMS_TEXT,
@@ -178,6 +181,17 @@ async def show_main_menu(callback: CallbackQuery, settings: Settings) -> None:
             callback.message,
             settings.user_agreement_url,
             settings.support_url,
+        )
+
+
+@router.callback_query(F.data == CHANNEL_CALLBACK)
+async def show_channel(callback: CallbackQuery) -> None:
+    await callback.answer()
+    if callback.message:
+        await edit_text_or_caption(
+            callback.message,
+            CHANNEL_TEXT,
+            channel_menu(),
         )
 
 

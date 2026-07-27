@@ -8,6 +8,7 @@ from redis.asyncio import Redis
 
 from app.bot.handlers import setup_routers
 from app.bot.services.command_menu import register_command_menu
+from app.bot.services.support import validate_support_group
 from app.core.config import get_settings
 from app.core.crypto import SubscriptionUrlCipher
 from app.core.logging import configure_logging
@@ -31,6 +32,7 @@ async def main() -> None:
         token=settings.telegram_bot_token,
         default=DefaultBotProperties(link_preview_is_disabled=True),
     )
+    await validate_support_group(bot, settings.support_group_id)
     payment_return_url = settings.yookassa_return_url
     if not payment_return_url:
         try:
@@ -67,10 +69,14 @@ async def main() -> None:
         "- base_url: %s\n"
         "- api_token: %s\n"
         "- internal_squad_uuid: %s\n"
+        "- russia_squad_uuid: %s\n"
+        "- template_user_uuid: %s\n"
         "- encryption_key: %s",
         "configured" if settings.remnawave_base_url else "missing",
         "configured" if settings.remnawave_api_token else "missing",
         "configured" if settings.remnawave_internal_squad_uuid else "missing",
+        "configured" if settings.remnawave_russia_squad_uuid else "missing",
+        "configured" if settings.remnawave_template_user_uuid else "not configured",
         "configured" if settings.subscription_encryption_key else "missing",
     )
     if settings.remnawave_missing_settings:
@@ -96,7 +102,16 @@ async def main() -> None:
             await remnawave_client.get_internal_squad(
                 settings.remnawave_internal_squad_uuid or ""
             )
-            logger.info("Remnawave Internal Squad validation succeeded")
+            if settings.remnawave_russia_squad_uuid:
+                await remnawave_client.get_internal_squad(
+                    settings.remnawave_russia_squad_uuid
+                )
+            if settings.remnawave_template_user_uuid:
+                await remnawave_client.get_user(
+                    settings.remnawave_template_user_uuid,
+                    operation="validate_new_user_template",
+                )
+            logger.info("Remnawave provisioning sources validation succeeded")
         except (RemnawaveError, ValueError) as exc:
             logger.error("Remnawave API is unavailable; bot will continue: %s", exc)
     dispatcher = Dispatcher(storage=storage)
@@ -116,6 +131,8 @@ async def main() -> None:
             remnawave_client=remnawave_client,
             subscription_cipher=subscription_cipher,
             internal_squad_uuid=settings.remnawave_internal_squad_uuid,
+            russia_squad_uuid=settings.remnawave_russia_squad_uuid,
+            template_user_uuid=settings.remnawave_template_user_uuid,
         )
     )
     logger.info("Starting VPN bot in long polling mode")
@@ -131,6 +148,8 @@ async def main() -> None:
             remnawave_client=remnawave_client,
             subscription_cipher=subscription_cipher,
             remnawave_internal_squad_uuid=settings.remnawave_internal_squad_uuid,
+            remnawave_russia_squad_uuid=settings.remnawave_russia_squad_uuid,
+            remnawave_template_user_uuid=settings.remnawave_template_user_uuid,
             settings=settings,
         )
     except Exception:

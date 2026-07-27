@@ -3,6 +3,7 @@ from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
 from aiogram import F, Router
+from aiogram.enums import ParseMode
 from aiogram.filters import Command, CommandObject
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
@@ -16,6 +17,8 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.bot.filters import AdminFilter
+from app.bot.keyboards.admin import admin_navigation
+from app.bot.rendering import edit_text_or_caption
 from app.core.crypto import SubscriptionUrlCipher, mask_subscription_url
 from app.database.models import (
     ProvisioningStatus,
@@ -25,19 +28,20 @@ from app.database.models import (
     User,
 )
 from app.integrations.remnawave.client import RemnawaveClient
-from app.integrations.remnawave.enums import (
-    RemnawaveUserStatus,
-    TrafficLimitStrategy,
-)
 from app.integrations.remnawave.exceptions import (
     RemnawaveAPIError,
     RemnawaveAuthenticationError,
     RemnawaveError,
 )
-from app.integrations.remnawave.schemas import CreateUserRequest, UpdateUserRequest
 from app.services.activation_notifications import send_activation_notification
 from app.services.audit import add_audit_log
-from app.services.remnawave import RemnawaveProvisioningService
+from app.services.remnawave import (
+    RemnawaveProvisioningService,
+    build_new_user_request,
+    build_new_user_update_request,
+    resolve_new_user_policy,
+    validate_new_user_policy,
+)
 from app.services.remnawave_sync import RemnawaveSyncService
 
 router = Router(name=__name__)
@@ -127,11 +131,20 @@ async def confirm_test_remnawave_create(
     callback: CallbackQuery,
     remnawave_client: RemnawaveClient | None = None,
     remnawave_internal_squad_uuid: str | None = None,
+    remnawave_russia_squad_uuid: str | None = None,
+    remnawave_template_user_uuid: str | None = None,
 ) -> None:
     if callback.message is None:
         return
     await callback.message.edit_reply_markup(reply_markup=None)
-    if remnawave_client is None or not remnawave_internal_squad_uuid:
+    if (
+        remnawave_client is None
+        or not remnawave_internal_squad_uuid
+        or (
+            not remnawave_template_user_uuid
+            and not remnawave_russia_squad_uuid
+        )
+    ):
         await callback.answer("Remnawave не настроен", show_alert=True)
         return
 
@@ -139,14 +152,22 @@ async def confirm_test_remnawave_create(
     remote = None
     squad_assigned = False
     try:
-        squad_uuid = UUID(remnawave_internal_squad_uuid)
+        policy = await resolve_new_user_policy(
+            remnawave_client,
+            template_user_uuid=remnawave_template_user_uuid,
+            internal_squad_uuid=remnawave_internal_squad_uuid,
+            russia_squad_uuid=remnawave_russia_squad_uuid,
+            local_user_id=callback.from_user.id,
+            remnawave_username=username,
+        )
+        expire_at = datetime.now(UTC) + timedelta(days=7)
         try:
             remote = await remnawave_client.create_user(
-                CreateUserRequest(
+                build_new_user_request(
+                    policy,
                     username=username,
-                    status=RemnawaveUserStatus.active,
-                    trafficLimitStrategy=TrafficLimitStrategy.no_reset,
-                    expireAt=datetime.now(UTC) + timedelta(days=7),
+                    expire_at=expire_at,
+                    telegram_id=callback.from_user.id,
                 ),
                 local_user_id=callback.from_user.id,
             )
@@ -158,22 +179,30 @@ async def confirm_test_remnawave_create(
             except RemnawaveError:
                 raise create_exc from None
         remote = await remnawave_client.update_user(
-            UpdateUserRequest(
-                uuid=remote.uuid, activeInternalSquads=[squad_uuid]
+            build_new_user_update_request(
+                policy,
+                user_uuid=remote.uuid,
+                expire_at=expire_at,
+                telegram_id=callback.from_user.id,
             ),
-            operation="test_assign_internal_squad",
+            operation="test_converge_new_user_policy",
             local_user_id=callback.from_user.id,
             remnawave_username=username,
         )
-        squad_assigned = squad_uuid in {
-            item.uuid for item in remote.active_internal_squads
-        }
         remote = await remnawave_client.get_user(
             remote.uuid,
             operation="test_get_subscription_url",
             local_user_id=callback.from_user.id,
             remnawave_username=username,
         )
+        validate_new_user_policy(
+            remote,
+            policy,
+            expire_at=expire_at,
+            telegram_id=callback.from_user.id,
+        )
+        assigned_squads = {item.uuid for item in remote.active_internal_squads}
+        squad_assigned = assigned_squads == set(policy.active_internal_squads)
     except RemnawaveError as exc:
         details = str(exc)
         if isinstance(exc, RemnawaveAPIError) and exc.safe_response_body:
@@ -411,6 +440,7 @@ async def retry_failed(
         )
         for item in items:
             item.provisioning_status = ProvisioningStatus.pending
+            item.activation_attempts = 0
             item.next_retry_at = datetime.now(UTC)
     await callback.answer(f"Поставлено в очередь: {len(items)}", show_alert=True)
 
@@ -418,13 +448,45 @@ async def retry_failed(
 @router.message(Command("grant_vpn"), AdminFilter())
 async def grant_start(message: Message, state: FSMContext) -> None:
     await state.clear()
+    await state.update_data(grant_back_action="users_section")
     await state.set_state(GrantVpnForm.telegram_id)
-    await message.answer("Введите Telegram ID:")
+    await message.answer(
+        "Введите Telegram ID:",
+        reply_markup=admin_navigation("users_section"),
+    )
+
+
+@router.callback_query(
+    F.data.in_({"rw:grant", "rw:grant:users", "rw:grant:vpn"}),
+    AdminFilter(),
+)
+async def grant_start_callback(callback: CallbackQuery, state: FSMContext) -> None:
+    await state.clear()
+    back_action = "remnawave" if callback.data == "rw:grant:vpn" else "users_section"
+    await state.update_data(grant_back_action=back_action)
+    await state.set_state(GrantVpnForm.telegram_id)
+    text = (
+        "🎁 <b>Выдать VPN-доступ</b>\n\n"
+        "Введите Telegram ID пользователя, которому нужно выдать доступ."
+    )
+    if callback.message is not None:
+        await edit_text_or_caption(
+            callback.message,
+            text,
+            admin_navigation(back_action),
+            parse_mode=ParseMode.HTML,
+        )
+    await callback.answer()
 
 
 @router.message(Command("grant_vpn"))
 async def reject_grant(message: Message) -> None:
     await message.answer("У вас нет доступа к этой команде.")
+
+
+async def _grant_navigation(state: FSMContext) -> InlineKeyboardMarkup:
+    data = await state.get_data()
+    return admin_navigation(str(data.get("grant_back_action", "users_section")))
 
 
 async def _positive(
@@ -435,52 +497,68 @@ async def _positive(
         if value <= 0:
             raise ValueError
     except ValueError:
-        await message.answer("Введите положительное целое число.")
+        await message.answer(
+            "Введите положительное целое число.",
+            reply_markup=await _grant_navigation(state),
+        )
         return
     await state.update_data(**{key: value})
     await state.set_state(next_state)
 
 
-@router.message(GrantVpnForm.telegram_id, AdminFilter())
+@router.message(GrantVpnForm.telegram_id, ~F.text.startswith("/"), AdminFilter())
 async def grant_id(message: Message, state: FSMContext) -> None:
     await _positive(message, state, "telegram_id", GrantVpnForm.duration)
     if await state.get_state() == GrantVpnForm.duration:
-        await message.answer("Срок: 7, 30, 90 или своё число дней:")
+        await message.answer(
+            "Срок: 7, 30, 90 или своё число дней:",
+            reply_markup=await _grant_navigation(state),
+        )
 
 
-@router.message(GrantVpnForm.duration, AdminFilter())
+@router.message(GrantVpnForm.duration, ~F.text.startswith("/"), AdminFilter())
 async def grant_days(message: Message, state: FSMContext) -> None:
     await _positive(message, state, "days", GrantVpnForm.traffic)
     if await state.get_state() == GrantVpnForm.traffic:
-        await message.answer("Лимит трафика в ГБ (0 — безлимит):")
+        await message.answer(
+            "Лимит трафика в ГБ (0 — безлимит):",
+            reply_markup=await _grant_navigation(state),
+        )
 
 
-@router.message(GrantVpnForm.traffic, AdminFilter())
+@router.message(GrantVpnForm.traffic, ~F.text.startswith("/"), AdminFilter())
 async def grant_traffic(message: Message, state: FSMContext) -> None:
     try:
         value = int(message.text or "")
         if value < 0:
             raise ValueError
     except ValueError:
-        await message.answer("Введите 0 или положительное число.")
+        await message.answer(
+            "Введите 0 или положительное число.",
+            reply_markup=await _grant_navigation(state),
+        )
         return
     await state.update_data(traffic=value)
     await state.set_state(GrantVpnForm.devices)
-    await message.answer("Лимит устройств:")
+    await message.answer(
+        "Лимит устройств:",
+        reply_markup=await _grant_navigation(state),
+    )
 
 
-@router.message(GrantVpnForm.devices, AdminFilter())
+@router.message(GrantVpnForm.devices, ~F.text.startswith("/"), AdminFilter())
 async def grant_devices(message: Message, state: FSMContext) -> None:
     await _positive(message, state, "devices", GrantVpnForm.confirm)
     if await state.get_state() == GrantVpnForm.confirm:
         data = await state.get_data()
         await message.answer(
             f"Подтвердите: ID {data['telegram_id']}, {data['days']} дней, "
-            f"{data['traffic']} ГБ, {data['devices']} устройств. Ответьте «да»."
+            f"{data['traffic']} ГБ, {data['devices']} устройств. Ответьте «да».",
+            reply_markup=await _grant_navigation(state),
         )
 
 
-@router.message(GrantVpnForm.confirm, AdminFilter())
+@router.message(GrantVpnForm.confirm, ~F.text.startswith("/"), AdminFilter())
 async def grant_confirm(
     message: Message,
     state: FSMContext,
@@ -488,12 +566,18 @@ async def grant_confirm(
     remnawave_client: RemnawaveClient | None = None,
     subscription_cipher: SubscriptionUrlCipher | None = None,
     remnawave_internal_squad_uuid: str | None = None,
+    remnawave_russia_squad_uuid: str | None = None,
+    remnawave_template_user_uuid: str | None = None,
 ) -> None:
+    data = await state.get_data()
+    back_action = str(data.get("grant_back_action", "users_section"))
     if (message.text or "").lower().strip() != "да":
         await state.clear()
-        await message.answer("Отменено.")
+        await message.answer(
+            "Отменено.",
+            reply_markup=admin_navigation(back_action),
+        )
         return
-    data = await state.get_data()
     now = datetime.now(UTC)
     async with session_factory() as session, session.begin():
         user = await session.scalar(
@@ -535,6 +619,8 @@ async def grant_confirm(
                 remnawave_client,
                 subscription_cipher,
                 remnawave_internal_squad_uuid,
+                remnawave_russia_squad_uuid,
+                remnawave_template_user_uuid,
             ).provision(sub, user, source=SubscriptionSource.admin)
         else:
             result = None
@@ -556,6 +642,12 @@ async def grant_confirm(
             subscription_id=subscription_id,
             cipher=subscription_cipher,
         )
-        await message.answer("VPN успешно выдан.")
+        await message.answer(
+            "VPN успешно выдан.",
+            reply_markup=admin_navigation(back_action),
+        )
     else:
-        await message.answer("Подписка сохранена, активация будет повторена.")
+        await message.answer(
+            "Подписка сохранена, активация будет повторена.",
+            reply_markup=admin_navigation(back_action),
+        )

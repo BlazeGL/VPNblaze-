@@ -161,7 +161,10 @@ class RemnawaveClient:
             UserResponse,
             "PATCH",
             "/api/users",
-            json=request.model_dump(by_alias=True, exclude_none=True, mode="json"),
+            # PATCH distinguishes an omitted field from an explicit JSON null.
+            # Remnawave uses null to clear nullable per-user overrides such as
+            # hwidDeviceLimit and externalSquadUuid.
+            json=request.model_dump(by_alias=True, exclude_unset=True, mode="json"),
             operation=operation,
             local_user_id=local_user_id,
             remnawave_username=remnawave_username,
