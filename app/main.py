@@ -87,7 +87,8 @@ async def main() -> None:
     else:
         try:
             subscription_cipher = SubscriptionUrlCipher(
-                settings.subscription_encryption_key or ""
+                settings.subscription_encryption_key or "",
+                settings.remnawave_subscription_base_url,
             )
             remnawave_client = RemnawaveClient(
                 settings.remnawave_base_url or "",

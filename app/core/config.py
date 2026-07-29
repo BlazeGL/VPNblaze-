@@ -70,6 +70,7 @@ class Settings(BaseSettings):
     remnawave_internal_squad_uuid: str | None = None
     remnawave_russia_squad_uuid: str | None = None
     remnawave_template_user_uuid: str | None = None
+    remnawave_subscription_base_url: str | None = None
     remnawave_request_timeout: float = Field(
         default=DEFAULT_REMNAWAVE_REQUEST_TIMEOUT,
         gt=0,
@@ -197,7 +198,11 @@ class Settings(BaseSettings):
             raise ValueError("YooKassa URLs must use HTTPS")
         return candidate
 
-    @field_validator("remnawave_base_url", mode="before")
+    @field_validator(
+        "remnawave_base_url",
+        "remnawave_subscription_base_url",
+        mode="before",
+    )
     @classmethod
     def validate_remnawave_base_url(cls, value: object) -> object:
         if value is None or (isinstance(value, str) and not value.strip()):
@@ -205,7 +210,7 @@ class Settings(BaseSettings):
         candidate = str(value).strip().rstrip("/")
         parsed = urlsplit(candidate)
         if parsed.scheme not in {"http", "https"} or not parsed.netloc:
-            raise ValueError("REMNAWAVE_BASE_URL must be an HTTP(S) URL")
+            raise ValueError("Remnawave URLs must be HTTP(S) URLs")
         return candidate
 
     @field_validator("remnawave_internal_squad_uuid", mode="before")

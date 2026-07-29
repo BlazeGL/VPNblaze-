@@ -46,6 +46,19 @@ def test_yookassa_credentials_are_loaded() -> None:
     assert settings.yookassa_api_url == "https://api.yookassa.ru/v3"
 
 
+def test_remnawave_subscription_base_url_is_normalized() -> None:
+    settings = Settings(
+        **REQUIRED_SETTINGS,
+        remnawave_subscription_base_url="https://subscription.example/api/sub/",
+        _env_file=None,
+    )
+
+    assert (
+        settings.remnawave_subscription_base_url
+        == "https://subscription.example/api/sub"
+    )
+
+
 def test_user_agreement_url_accepts_only_https_without_spaces() -> None:
     valid = Settings(
         **REQUIRED_SETTINGS,

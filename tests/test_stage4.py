@@ -209,6 +209,32 @@ def test_subscription_url_encryption_round_trip() -> None:
     assert cipher.decrypt(encrypted) == url
 
 
+def test_subscription_url_public_origin_override_preserves_private_path() -> None:
+    cipher = SubscriptionUrlCipher(
+        Fernet.generate_key().decode(),
+        "https://subscription.example",
+    )
+    old_url = "https://old-panel.example/api/sub/private-key?format=xray"
+
+    encrypted = cipher.encrypt(old_url)
+
+    assert cipher.decrypt(encrypted) == (
+        "https://subscription.example/api/sub/private-key?format=xray"
+    )
+
+
+def test_subscription_url_public_path_override_keeps_only_private_token() -> None:
+    cipher = SubscriptionUrlCipher(
+        Fernet.generate_key().decode(),
+        "https://subscription.example/custom/sub",
+    )
+    old_url = "https://old-panel.example/api/sub/private-key"
+
+    assert cipher.decrypt(cipher.encrypt(old_url)) == (
+        "https://subscription.example/custom/sub/private-key"
+    )
+
+
 def test_subscription_url_mask_hides_key() -> None:
     masked = mask_subscription_url("https://panel.example/api/sub/abcdef123456xyz")
     assert masked == "https://panel.example/api/sub/abc...xyz"

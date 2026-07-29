@@ -49,7 +49,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     if not settings.remnawave_missing_settings:
         try:
             app.state.subscription_cipher = SubscriptionUrlCipher(
-                settings.subscription_encryption_key or ""
+                settings.subscription_encryption_key or "",
+                settings.remnawave_subscription_base_url,
             )
             app.state.remnawave_client = RemnawaveClient(
                 settings.remnawave_base_url or "",
