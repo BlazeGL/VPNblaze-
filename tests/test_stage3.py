@@ -84,7 +84,7 @@ def make_promo(
 
 
 @pytest.mark.asyncio
-async def test_new_user_gets_exact_seven_day_trial() -> None:
+async def test_new_user_gets_exact_thirty_day_trial() -> None:
     session = session_mock()
     user = make_user()
     session.scalar.side_effect = [user, None, None]
@@ -93,7 +93,7 @@ async def test_new_user_gets_exact_seven_day_trial() -> None:
         source_type=SubscriptionSource.trial,
         status=SubscriptionStatus.pending,
         started_at=datetime.now(UTC),
-        expires_at=datetime.now(UTC) + timedelta(days=7),
+        expires_at=datetime.now(UTC) + timedelta(days=30),
         device_limit=1,
     )
     subscription_service = MagicMock()
@@ -107,7 +107,7 @@ async def test_new_user_gets_exact_seven_day_trial() -> None:
     assert result.activated is True
     assert result.activation is not None
     assert result.activation.expires_at - result.activation.started_at == timedelta(
-        days=7
+        days=30
     )
     assert user.trial_used is True
     assert result.activation.telegram_id == user.telegram_id
