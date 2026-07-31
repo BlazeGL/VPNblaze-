@@ -160,10 +160,23 @@ class SupportModeFilter(BaseFilter):
         ):
             return False
         try:
-            mode = await SupportStore(
+            store = SupportStore(
                 redis_client,
                 settings.support_group_id,
-            ).get_mode(message.from_user.id)
+            )
+            mode = await store.get_mode(message.from_user.id)
+            if mode is None and settings.support_group_id is not None:
+                legacy_mode = await SupportStore(
+                    redis_client,
+                    None,
+                ).get_mode(message.from_user.id)
+                if legacy_mode in {"waiting", "active"}:
+                    mode = await store.begin(message.from_user.id)
+                    logger.info(
+                        "Restored pending support mode for user %s after support "
+                        "group configuration",
+                        message.from_user.id,
+                    )
         except Exception:
             logger.exception(
                 "Could not read support mode for user %s",

@@ -627,3 +627,28 @@ async def test_commands_never_pass_active_support_filter() -> None:
         redis_client=redis,  # type: ignore[arg-type]
         settings=settings,  # type: ignore[arg-type]
     )
+
+
+@pytest.mark.asyncio
+async def test_support_filter_restores_legacy_waiting_mode() -> None:
+    redis = FakeRedis()
+    await SupportStore(redis, None).begin(USER_ID)  # type: ignore[arg-type]
+    settings = SimpleNamespace(support_group_id=SUPPORT_CHAT_ID)
+    message = private_message(
+        fake_bot(),
+        telegram_user(),
+        text="Сообщение после настройки группы",
+    )
+
+    assert await SupportModeFilter()(
+        message,
+        redis_client=redis,  # type: ignore[arg-type]
+        settings=settings,  # type: ignore[arg-type]
+    )
+    assert (
+        await SupportStore(  # type: ignore[arg-type]
+            redis,
+            SUPPORT_CHAT_ID,
+        ).get_mode(USER_ID)
+        == "waiting"
+    )
