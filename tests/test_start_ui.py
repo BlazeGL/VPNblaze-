@@ -37,7 +37,7 @@ def test_start_text_is_valid_html_caption_without_embedded_terms_link() -> None:
     assert len(START_TEXT) <= 1024
     assert "href=" not in START_TEXT
     assert "<b>Добро пожаловать в BlazeVPN!</b>" in START_TEXT
-    assert "<b>7-дневный бесплатный период</b>" in START_TEXT
+    assert "<b>30-дневный бесплатный период</b>" in START_TEXT
 
 
 def test_start_keyboard_has_requested_layout_and_callbacks() -> None:
