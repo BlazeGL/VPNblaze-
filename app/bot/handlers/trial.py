@@ -150,6 +150,9 @@ async def show_subscription(
             "Для безопасности откройте бота в личных сообщениях.", show_alert=True
         )
         return
+    # Acknowledge the Telegram callback before contacting Remnawave. Its API can
+    # be slow or temporarily unavailable, while callback queries expire quickly.
+    await callback.answer()
     sync_unavailable = False
     async with session_factory() as session, session.begin():
         user = await session.scalar(
@@ -162,29 +165,25 @@ async def show_subscription(
             if user is not None
             else None
         )
-        if (
-            callback.data == "subscription_refresh"
-            and user
-            and subscription
-            and remnawave_client
-            and subscription_cipher
-        ):
-            try:
-                await RemnawaveSyncService(
-                    session, remnawave_client, subscription_cipher
-                ).sync_one(subscription, user)
-            except Exception:
+        if user and subscription:
+            if remnawave_client and subscription_cipher:
+                try:
+                    await RemnawaveSyncService(
+                        session, remnawave_client, subscription_cipher
+                    ).sync_one(subscription, user)
+                except Exception:
+                    sync_unavailable = True
+                    logger.exception(
+                        "Could not refresh subscription for Telegram user %s",
+                        callback.from_user.id,
+                    )
+            else:
                 sync_unavailable = True
-                logger.exception(
-                    "Could not refresh subscription for Telegram user %s",
-                    callback.from_user.id,
-                )
         tariff = (
             await session.get(Tariff, subscription.tariff_id)
             if subscription and subscription.tariff_id
             else None
         )
-    await callback.answer()
     if callback.message is None:
         return
     if subscription is None:

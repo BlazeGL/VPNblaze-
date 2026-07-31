@@ -5,7 +5,9 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from aiogram.enums import ChatType
 
+from app.bot.handlers import trial
 from app.bot.handlers.apps import _owned_subscription, show_short_link
+from app.bot.handlers.trial import show_subscription
 from app.bot.keyboards.main_menu import build_main_menu
 from app.bot.keyboards.subscription import (
     activation_keyboard,
@@ -295,3 +297,72 @@ def test_expired_subscription_sees_renewal_and_previous_key() -> None:
         "💳 Возобновить подписку",
         "🔑 Показать прежний ключ",
     ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "callback_data",
+    [
+        "my_subscription",
+        "my_subscription_from_key",
+        "subscription_refresh",
+        "back_to_subscription",
+    ],
+)
+async def test_subscription_is_synced_every_time_account_is_opened(
+    callback_data: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[str] = []
+    callback = MagicMock()
+    callback.data = callback_data
+    callback.from_user.id = 777
+    callback.message.chat.type = ChatType.PRIVATE
+    callback.answer = AsyncMock(side_effect=lambda: events.append("answered"))
+
+    user = User(id=17, telegram_id=777)
+    user.balance = 0
+    user.total_referrals = 0
+    user.total_referral_income = 0
+    subscription = make_subscription(
+        user_id=user.id,
+        tariff_id=None,
+        remnawave_sync_error=None,
+        subscription_url_encrypted=b"encrypted",
+    )
+    session = MagicMock()
+    session.scalar = AsyncMock(side_effect=[user, subscription])
+    transaction = MagicMock()
+    transaction.__aenter__ = AsyncMock(return_value=None)
+    transaction.__aexit__ = AsyncMock(return_value=False)
+    session.begin.return_value = transaction
+    session_context = MagicMock()
+    session_context.__aenter__ = AsyncMock(return_value=session)
+    session_context.__aexit__ = AsyncMock(return_value=False)
+    session_factory = MagicMock(return_value=session_context)
+
+    sync_one = AsyncMock(side_effect=lambda *_: events.append("synced"))
+    sync_service = MagicMock()
+    sync_service.sync_one = sync_one
+    sync_service_factory = MagicMock(return_value=sync_service)
+    monkeypatch.setattr(trial, "RemnawaveSyncService", sync_service_factory)
+    renderer = AsyncMock()
+    monkeypatch.setattr(trial, "edit_text_or_caption", renderer)
+
+    remnawave_client = MagicMock()
+    subscription_cipher = MagicMock()
+    await show_subscription(
+        callback,
+        session_factory,
+        remnawave_client,
+        subscription_cipher,
+    )
+
+    assert events == ["answered", "synced"]
+    sync_service_factory.assert_called_once_with(
+        session,
+        remnawave_client,
+        subscription_cipher,
+    )
+    sync_one.assert_awaited_once_with(subscription, user)
+    renderer.assert_awaited_once()
