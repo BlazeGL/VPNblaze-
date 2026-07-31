@@ -12,8 +12,8 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.bot.keyboards.subscription import (
     activation_keyboard,
-    back_keyboard,
     devices_keyboard,
+    instruction_keyboard,
     platform_keyboard,
     subscription_menu,
 )
@@ -296,5 +296,5 @@ async def show_instruction(callback: CallbackQuery) -> None:
     await callback.answer()
     if callback.message:
         await edit_or_send(
-            callback.message, INSTRUCTION_TEXT, back_keyboard("back_to_key")
+            callback.message, INSTRUCTION_TEXT, instruction_keyboard()
         )

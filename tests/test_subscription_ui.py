@@ -11,6 +11,7 @@ from app.bot.keyboards.subscription import (
     activation_keyboard,
     back_keyboard,
     devices_keyboard,
+    instruction_keyboard,
     platform_keyboard,
     subscription_menu,
 )
@@ -20,7 +21,7 @@ from app.bot.texts.account import (
     format_traffic,
     get_subscription_status_text,
 )
-from app.bot.texts.subscription import activation_text
+from app.bot.texts.subscription import INSTRUCTION_TEXT, PLATFORM_TEXTS, activation_text
 from app.database.models import (
     ProvisioningStatus,
     SubscriptionSource,
@@ -102,6 +103,31 @@ def test_urls_and_subscription_values_are_not_stored_in_callback_data() -> None:
 def test_unknown_navigation_destination_is_rejected() -> None:
     with pytest.raises(ValueError, match="Unsupported navigation destination"):
         back_keyboard("user_controlled_destination")
+
+
+def test_instruction_has_clear_steps_and_direct_action_buttons() -> None:
+    assert "Установите приложение" in INSTRUCTION_TEXT
+    assert "Скопируйте персональную ссылку" in INSTRUCTION_TEXT
+    assert "Добавьте ссылку в приложение" in INSTRUCTION_TEXT
+    assert "Включите VPN" in INSTRUCTION_TEXT
+    assert "Из буфера обмена" in INSTRUCTION_TEXT
+
+    buttons = flatten(instruction_keyboard())
+    assert [button.callback_data for button in buttons] == [  # type: ignore[attr-defined]
+        "apps",
+        "key_refresh",
+        "support_from_key",
+        "back_to_key",
+    ]
+
+
+@pytest.mark.parametrize("platform", ["android", "ios", "windows", "linux"])
+def test_platform_instructions_end_with_connection_confirmation(
+    platform: str,
+) -> None:
+    assert "Показать мой ключ" in PLATFORM_TEXTS[platform]
+    assert "из буфера обмена" in PLATFORM_TEXTS[platform]
+    assert "Подключено" in PLATFORM_TEXTS[platform]
 
 
 def test_support_buttons_use_internal_callbacks() -> None:

@@ -130,6 +130,32 @@ def back_keyboard(destination: str) -> InlineKeyboardMarkup:
     )
 
 
+def instruction_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="📱 Скачать приложение",
+                    callback_data="apps",
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="🔑 Показать мой ключ",
+                    callback_data="key_refresh",
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="🆘 Не получается — написать в поддержку",
+                    callback_data="support_from_key",
+                )
+            ],
+            [InlineKeyboardButton(text="⬅️ Назад", callback_data="back_to_key")],
+        ]
+    )
+
+
 def subscription_menu(
     *,
     state: str = "active",
