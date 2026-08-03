@@ -12,7 +12,7 @@ from app.bot.keyboards.start import (
 )
 from app.bot.rendering import edit_text_or_caption
 from app.database.repositories import UserRepository
-from app.services.referrals import ReferralService
+from app.services.referrals import REFERRAL_BONUS, ReferralService
 
 router = Router(name=__name__)
 
@@ -51,7 +51,8 @@ async def show_bonuses(
     text = (
         "👥 <b>Пригласите друзей</b>\n\n"
         "За каждого нового пользователя, выполнившего условия действующей "
-        "реферальной программы, вы получаете <b>50 ₽</b> на баланс.\n\n"
+        f"реферальной программы, вы получаете <b>{money(REFERRAL_BONUS)} ₽</b> "
+        "на баланс.\n\n"
         "👥 Приглашено пользователей\n"
         f"<b>{user.total_referrals}</b>\n\n"
         "💵 Начислено бонусов\n"

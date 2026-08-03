@@ -11,7 +11,7 @@ from app.database.models import (
 )
 from app.services.balance import BalanceService
 
-REFERRAL_BONUS = Decimal("50.00")
+REFERRAL_BONUS = Decimal("30.00")
 REFERRAL_PREFIX = "REF_"
 
 

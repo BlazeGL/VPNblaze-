@@ -69,9 +69,9 @@ async def test_referral_bonus_is_awarded_once() -> None:
     assert second.awarded is False
     assert second.reason == "already_referred"
     assert invitee.referred_by == referrer.id
-    assert referrer.balance == Decimal("50.00")
+    assert referrer.balance == Decimal("30.00")
     assert referrer.total_referrals == 1
-    assert referrer.total_referral_income == Decimal("50.00")
+    assert referrer.total_referral_income == Decimal("30.00")
     transaction = session.add.call_args.args[0]
     assert transaction.type == BalanceTransactionType.referral_bonus
 

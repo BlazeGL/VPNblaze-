@@ -39,7 +39,7 @@ from app.database.models import (
     TrialActivation,
 )
 from app.database.repositories import UserRepository
-from app.services.referrals import ReferralService
+from app.services.referrals import REFERRAL_BONUS, ReferralService
 
 logger = logging.getLogger(__name__)
 router = Router(name=__name__)
@@ -110,7 +110,7 @@ async def handle_start(
         try:
             await message.bot.send_message(
                 referral.referrer.telegram_id,
-                "🎁 Вам начислен реферальный бонус 50 ₽.",
+                f"🎁 Вам начислен реферальный бонус {REFERRAL_BONUS:.0f} ₽.",
             )
         except Exception:
             logger.exception(
