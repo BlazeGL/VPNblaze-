@@ -34,6 +34,11 @@ class Tariff(Base):
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
     duration_days: Mapped[int] = mapped_column(Integer)
     price: Mapped[Decimal] = mapped_column(Numeric(10, 2))
+    show_price_in_button: Mapped[bool] = mapped_column(
+        Boolean,
+        default=True,
+        server_default="true",
+    )
     currency: Mapped[str] = mapped_column(
         String(3), default="RUB", server_default="RUB"
     )

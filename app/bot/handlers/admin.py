@@ -70,6 +70,10 @@ class TariffPriceForm(StatesGroup):
     price = State()
 
 
+class TariffButtonTextForm(StatesGroup):
+    text = State()
+
+
 class UserSearchForm(StatesGroup):
     telegram_id = State()
 
@@ -160,6 +164,33 @@ def parse_tariff_price(text: str | None) -> Decimal:
     return value.quantize(Decimal("0.01"))
 
 
+def parse_tariff_button_text(text: str | None) -> str:
+    value = (text or "").strip()
+    if not value or len(value) > 255 or "\n" in value or "\r" in value:
+        raise ValueError("invalid_button_text")
+    return value
+
+
+def tariff_shows_button_price(item: Tariff) -> bool:
+    return getattr(item, "show_price_in_button", None) is not False
+
+
+def tariff_price_prompt(item: Tariff) -> str:
+    price_visibility = (
+        "показывается рядом с текстом кнопки"
+        if tariff_shows_button_price(item)
+        else "скрыта; клиент увидит только заданный текст кнопки"
+    )
+    return (
+        "💰 Изменение цены\n\n"
+        f"{item.name}\n"
+        f"Фактическая цена оплаты: {money(item.price, item.currency)}\n"
+        f"Отображение полной цены: {price_visibility}.\n\n"
+        "Отправьте новую фактическую цену числом, например 299 или 299,50.\n\n"
+        "Текст кнопки и показ полной цены можно изменить кнопками ниже."
+    )
+
+
 def tariff_card_text(item: Tariff) -> str:
     traffic = (
         "без ограничений"
@@ -170,6 +201,8 @@ def tariff_card_text(item: Tariff) -> str:
         "💳 Управление тарифом\n\n"
         f"{item.name}\n"
         f"Цена: {money(item.price, item.currency)}\n"
+        "Полная цена в кнопке: "
+        f"{'показывается' if tariff_shows_button_price(item) else 'скрыта'}\n"
         f"Срок: {item.duration_days} дней\n"
         f"Трафик: {traffic}\n"
         f"Устройств: {item.device_limit}\n"
@@ -346,11 +379,61 @@ async def admin_actions(
         await state.set_state(TariffPriceForm.price)
         if callback.message:
             await callback.message.edit_text(
-                "💰 Изменение цены\n\n"
-                f"{item.name}\n"
-                f"Сейчас: {money(item.price, item.currency)}\n\n"
-                "Отправьте новую цену числом, например 299 или 299,50.",
-                reply_markup=admin_price_navigation(),
+                tariff_price_prompt(item),
+                reply_markup=admin_price_navigation(item),
+            )
+    elif action == "button_text":
+        await state.clear()
+        async with session_factory() as session:
+            item = await TariffRepository(session).get_by_id(
+                callback_data.tariff_id
+            )
+        if item is None:
+            await callback.answer("Тариф не найден", show_alert=True)
+            return
+        await state.update_data(tariff_id=item.id)
+        await state.set_state(TariffButtonTextForm.text)
+        if callback.message:
+            await callback.message.edit_text(
+                "✏️ Текст кнопки тарифа\n\n"
+                f"Сейчас:\n{item.name}\n\n"
+                "Отправьте новый текст одной строкой. Например:\n"
+                "Пополнить на 3 месяца — 180 ₽/мес",
+                reply_markup=admin_navigation("tariffs"),
+            )
+    elif action == "toggle_button_price":
+        await state.clear()
+        async with session_factory() as session, session.begin():
+            repository = TariffRepository(session)
+            item = await repository.get_by_id(callback_data.tariff_id)
+            if item is not None:
+                item = await repository.update(
+                    item,
+                    show_price_in_button=not tariff_shows_button_price(item),
+                )
+                actor = await UserRepository(session).get_by_telegram_id(
+                    callback.from_user.id
+                )
+                add_audit_log(
+                    session,
+                    action="admin_tariff_button_price_visibility_changed",
+                    entity_type="tariff",
+                    entity_id=item.id,
+                    actor_user_id=actor.id if actor else None,
+                    actor_telegram_id=callback.from_user.id,
+                    details={
+                        "show_price_in_button": item.show_price_in_button,
+                    },
+                )
+        if item is None:
+            await callback.answer("Тариф не найден", show_alert=True)
+            return
+        await state.update_data(tariff_id=item.id)
+        await state.set_state(TariffPriceForm.price)
+        if callback.message:
+            await callback.message.edit_text(
+                tariff_price_prompt(item),
+                reply_markup=admin_price_navigation(item),
             )
     elif action == "edit":
         await state.clear()
@@ -873,6 +956,69 @@ async def update_tariff_price(
         f"{money(item.price, item.currency)}\n\n"
         "Новая цена уже используется для новых заказов.",
         reply_markup=admin_tariffs(items),
+    )
+
+
+@router.message(TariffButtonTextForm.text, AdminFilter())
+async def update_tariff_button_text(
+    message: Message,
+    state: FSMContext,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    try:
+        new_text = parse_tariff_button_text(message.text)
+    except ValueError:
+        await message.answer(
+            "Отправьте текст длиной от 1 до 255 символов одной строкой.",
+            reply_markup=admin_navigation("tariffs"),
+        )
+        return
+
+    data = await state.get_data()
+    tariff_id = data.get("tariff_id")
+    if not isinstance(tariff_id, int) or tariff_id <= 0:
+        await state.clear()
+        await message.answer(
+            "Форма устарела. Выберите тариф заново.",
+            reply_markup=admin_navigation("tariffs"),
+        )
+        return
+
+    async with session_factory() as session, session.begin():
+        repository = TariffRepository(session)
+        item = await repository.get_by_id(tariff_id)
+        if item is None:
+            await state.clear()
+            await message.answer(
+                "Тариф больше не найден.",
+                reply_markup=admin_navigation("tariffs"),
+            )
+            return
+        old_text = item.name
+        item = await repository.update(item, name=new_text)
+        actor_telegram_id = message.from_user.id if message.from_user else None
+        actor = (
+            await UserRepository(session).get_by_telegram_id(actor_telegram_id)
+            if actor_telegram_id is not None
+            else None
+        )
+        add_audit_log(
+            session,
+            action="admin_tariff_button_text_changed",
+            entity_type="tariff",
+            entity_id=item.id,
+            actor_user_id=actor.id if actor else None,
+            actor_telegram_id=actor_telegram_id,
+            details={
+                "old_text": old_text,
+                "new_text": item.name,
+            },
+        )
+
+    await state.clear()
+    await message.answer(
+        "✅ Текст кнопки изменён\n\n" + tariff_card_text(item),
+        reply_markup=admin_tariff_actions(item),
     )
 
 

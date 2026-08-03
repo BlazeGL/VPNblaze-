@@ -115,6 +115,28 @@ def test_each_active_tariff_is_available_from_catalog_card() -> None:
     assert all(button.callback_data for button in buttons[:2])
 
 
+def test_catalog_can_hide_actual_price_and_keep_custom_monthly_text() -> None:
+    monthly = canonical_tariff()
+    quarterly = Tariff(
+        id=2,
+        name="🔥 Пополнить на 3 месяца — 139 ₽/мес",
+        duration_days=90,
+        price=Decimal("417.00"),
+        show_price_in_button=False,
+        currency="RUB",
+        traffic_limit_gb=600,
+        is_unlimited_traffic=False,
+        device_limit=5,
+        is_active=True,
+    )
+
+    _, markup = render_tariff_screen(monthly, [monthly, quarterly])
+    buttons = [button for row in markup.inline_keyboard for button in row]
+
+    assert buttons[1].text == "🔥 Пополнить на 3 месяца — 139 ₽/мес"
+    assert "417" not in buttons[1].text
+
+
 @pytest.mark.asyncio
 async def test_plans_command_reuses_tariffs_callback_renderer(
     monkeypatch: pytest.MonkeyPatch,

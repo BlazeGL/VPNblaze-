@@ -9,6 +9,24 @@ def money(value: object, currency: str = "RUB") -> str:
     return f"{amount} ₽" if currency == "RUB" else f"{amount} {currency}"
 
 
+def show_price_in_button(tariff: Tariff) -> bool:
+    """Keep legacy and not-yet-persisted tariff objects price-visible."""
+    return getattr(tariff, "show_price_in_button", None) is not False
+
+
+def tariff_button_text(tariff: Tariff, *, selected: bool = False) -> str:
+    marker = "• " if selected else ""
+    show_price = show_price_in_button(tariff)
+    max_name_length = 42 if show_price else 58
+    name = (
+        tariff.name
+        if len(tariff.name) <= max_name_length
+        else f"{tariff.name[: max_name_length - 3]}..."
+    )
+    price = f" · {money(tariff.price, tariff.currency)}" if show_price else ""
+    return f"{marker}{name}{price}"
+
+
 def build_tariff_card(
     tariff: Tariff,
     tariffs: list[Tariff] | None = None,
@@ -16,14 +34,12 @@ def build_tariff_card(
     rows: list[list[InlineKeyboardButton]] = []
     if tariffs and len(tariffs) > 1:
         for item in tariffs:
-            marker = "• " if item.id == tariff.id else ""
-            name = item.name if len(item.name) <= 32 else f"{item.name[:29]}..."
             rows.append(
                 [
                     InlineKeyboardButton(
-                        text=(
-                            f"{marker}{name} · "
-                            f"{money(item.price, item.currency)}"
+                        text=tariff_button_text(
+                            item,
+                            selected=item.id == tariff.id,
                         ),
                         callback_data=TariffCallback(
                             action="view",

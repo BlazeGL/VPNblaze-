@@ -39,6 +39,10 @@ def _tariff_button_name(tariff: Tariff) -> str:
     return tariff.name if len(tariff.name) <= 30 else f"{tariff.name[:27]}..."
 
 
+def _shows_button_price(tariff: Tariff) -> bool:
+    return getattr(tariff, "show_price_in_button", None) is not False
+
+
 def admin_menu() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
@@ -127,6 +131,7 @@ def admin_tariffs(tariffs: list[Tariff]) -> InlineKeyboardMarkup:
                     f"{'✅' if item.is_active else '⏸'} "
                     f"{_tariff_button_name(item)}"
                     f" — {money(item.price, item.currency)}"
+                    f" {'👁' if _shows_button_price(item) else '🙈'}"
                 ),
                 callback_data=AdminCallback(
                     action="price",
@@ -181,8 +186,26 @@ def admin_tariff_actions(tariff: Tariff) -> InlineKeyboardMarkup:
             [
                 _admin_button("💰 Изменить цену", "price", tariff_id=tariff.id),
                 _admin_button(
-                    "✏️ Изменить параметры", "form", tariff_id=tariff.id
+                    "✏️ Текст кнопки", "button_text", tariff_id=tariff.id
                 ),
+            ],
+            [
+                _admin_button(
+                    (
+                        "🙈 Скрыть полную цену"
+                        if _shows_button_price(tariff)
+                        else "👁 Показывать полную цену"
+                    ),
+                    "toggle_button_price",
+                    tariff_id=tariff.id,
+                )
+            ],
+            [
+                _admin_button(
+                    "⚙️ Изменить остальные параметры",
+                    "form",
+                    tariff_id=tariff.id,
+                )
             ],
             [
                 _admin_button(
@@ -196,8 +219,33 @@ def admin_tariff_actions(tariff: Tariff) -> InlineKeyboardMarkup:
     )
 
 
-def admin_price_navigation() -> InlineKeyboardMarkup:
-    return admin_navigation("tariffs")
+def admin_price_navigation(tariff: Tariff | None = None) -> InlineKeyboardMarkup:
+    rows: list[list[InlineKeyboardButton]] = []
+    if tariff is not None:
+        rows.append(
+            [
+                _admin_button(
+                    (
+                        "🙈 Скрыть полную цену в кнопке"
+                        if _shows_button_price(tariff)
+                        else "👁 Показывать полную цену в кнопке"
+                    ),
+                    "toggle_button_price",
+                    tariff_id=tariff.id,
+                )
+            ]
+        )
+        rows.append(
+            [
+                _admin_button(
+                    "✏️ Изменить текст кнопки",
+                    "button_text",
+                    tariff_id=tariff.id,
+                )
+            ]
+        )
+    rows.append(_back_home_row("tariffs"))
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def broadcast_confirm_keyboard() -> InlineKeyboardMarkup:

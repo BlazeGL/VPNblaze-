@@ -6,7 +6,12 @@ import pytest
 
 from app.bot.callbacks import AdminCallback
 from app.bot.handlers import admin
-from app.bot.handlers.admin import parse_tariff_price, update_tariff_price
+from app.bot.handlers.admin import (
+    parse_tariff_button_text,
+    parse_tariff_price,
+    update_tariff_button_text,
+    update_tariff_price,
+)
 from app.bot.handlers.admin_promos import (
     cancel_promo_form,
     decimal_text,
@@ -16,6 +21,7 @@ from app.bot.keyboards.admin import (
     admin_menu,
     admin_price_navigation,
     admin_sales_menu,
+    admin_tariff_actions,
     admin_tariffs,
     promo_confirm_keyboard,
     promo_list_menu,
@@ -34,6 +40,7 @@ def make_tariff(
     price: Decimal = Decimal("199.00"),
     duration_days: int = 30,
     is_active: bool = True,
+    show_price_in_button: bool = True,
 ) -> Tariff:
     return Tariff(
         id=tariff_id,
@@ -41,6 +48,7 @@ def make_tariff(
         description="Основной тариф",
         duration_days=duration_days,
         price=price,
+        show_price_in_button=show_price_in_button,
         currency="RUB",
         traffic_limit_gb=600,
         is_unlimited_traffic=False,
@@ -174,6 +182,57 @@ def test_parse_tariff_price_accepts_dot_and_comma(
 def test_parse_tariff_price_rejects_invalid_values(raw: str) -> None:
     with pytest.raises(ValueError, match="invalid_price"):
         parse_tariff_price(raw)
+
+
+def test_tariff_actions_offer_quick_text_and_price_visibility_edits() -> None:
+    item = make_tariff(show_price_in_button=True)
+    markup = admin_tariff_actions(item)
+    actions = {
+        admin_action(button).action
+        for button in buttons(markup)
+        if button.callback_data is not None  # type: ignore[attr-defined]
+    }
+    labels = {button.text for button in buttons(markup)}  # type: ignore[attr-defined]
+
+    assert {"price", "button_text", "toggle_button_price", "form"} <= actions
+    assert "🙈 Скрыть полную цену" in labels
+
+
+def test_price_screen_offers_visibility_toggle_and_text_edit() -> None:
+    item = make_tariff(show_price_in_button=False)
+    markup = admin_price_navigation(item)
+    actions = {
+        admin_action(button).action
+        for button in buttons(markup)
+        if button.callback_data is not None  # type: ignore[attr-defined]
+    }
+    labels = {button.text for button in buttons(markup)}  # type: ignore[attr-defined]
+
+    assert {"toggle_button_price", "button_text", "tariffs", "menu"} == actions
+    assert "👁 Показывать полную цену в кнопке" in labels
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        (
+            "  Пополнить на 3 месяца — 180 ₽/мес  ",
+            "Пополнить на 3 месяца — 180 ₽/мес",
+        ),
+        ("1 месяц — 199₽/мес", "1 месяц — 199₽/мес"),
+    ],
+)
+def test_parse_tariff_button_text_accepts_single_line(
+    raw: str,
+    expected: str,
+) -> None:
+    assert parse_tariff_button_text(raw) == expected
+
+
+@pytest.mark.parametrize("raw", ["", "   ", "первая\nвторая", "x" * 256])
+def test_parse_tariff_button_text_rejects_invalid_values(raw: str) -> None:
+    with pytest.raises(ValueError, match="invalid_button_text"):
+        parse_tariff_button_text(raw)
 
 
 @pytest.mark.asyncio
@@ -323,6 +382,61 @@ async def test_update_tariff_price_handles_missing_tariff(
         "⬅️ Назад",
         "🏠 Главное меню",
     }
+
+
+@pytest.mark.asyncio
+async def test_update_tariff_button_text_updates_only_name(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    item = make_tariff(
+        name="3 месяца — 139 ₽/мес",
+        price=Decimal("417.00"),
+        duration_days=90,
+        show_price_in_button=False,
+    )
+    unchanged = {
+        "price": item.price,
+        "duration_days": item.duration_days,
+        "show_price_in_button": item.show_price_in_button,
+        "traffic_limit_gb": item.traffic_limit_gb,
+    }
+
+    async def apply_update(entity: Tariff, **values: object) -> Tariff:
+        for key, value in values.items():
+            setattr(entity, key, value)
+        return entity
+
+    repository = MagicMock()
+    repository.get_by_id = AsyncMock(return_value=item)
+    repository.update = AsyncMock(side_effect=apply_update)
+    monkeypatch.setattr(
+        admin, "TariffRepository", MagicMock(return_value=repository)
+    )
+    user_repository = MagicMock()
+    user_repository.get_by_telegram_id = AsyncMock(
+        return_value=SimpleNamespace(id=99)
+    )
+    monkeypatch.setattr(
+        admin, "UserRepository", MagicMock(return_value=user_repository)
+    )
+    audit = MagicMock()
+    monkeypatch.setattr(admin, "add_audit_log", audit)
+
+    factory = transactional_factory(MagicMock())
+    state = state_with({"tariff_id": item.id})
+    message = message_with("Пополнить на 3 месяца — 180 ₽/мес")
+
+    await update_tariff_button_text(message, state, factory)
+
+    assert item.name == "Пополнить на 3 месяца — 180 ₽/мес"
+    assert {key: getattr(item, key) for key in unchanged} == unchanged
+    repository.update.assert_awaited_once_with(
+        item,
+        name="Пополнить на 3 месяца — 180 ₽/мес",
+    )
+    assert audit.call_args.kwargs["action"] == "admin_tariff_button_text_changed"
+    state.clear.assert_awaited_once_with()
+    assert "Текст кнопки изменён" in message.answer.await_args.args[0]
 
 
 @pytest.mark.asyncio
