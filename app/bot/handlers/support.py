@@ -235,23 +235,28 @@ async def begin_support(
     redis_client: Redis,
     settings: Settings,
 ) -> bool:
-    if message.chat.type != ChatType.PRIVATE or message.from_user is None:
+    if message.chat.type != ChatType.PRIVATE:
         return False
+    # For callback queries ``message`` is the bot's own menu message, so
+    # ``message.from_user`` points to the bot.  A private chat ID always points
+    # to the human participant and works for both callbacks and /support.
+    support_user_id = message.chat.id
     try:
         await state.clear()
         store = SupportStore(
             redis_client,
             settings.support_group_id,
         )
-        async with store.user_lock(message.from_user.id):
-            await store.begin(message.from_user.id)
+        async with store.user_lock(support_user_id):
+            await store.begin(support_user_id)
     except Exception:
         logger.exception(
             "Could not activate support mode for user %s",
-            message.from_user.id,
+            support_user_id,
         )
         await message.answer(SUPPORT_DELIVERY_FAILED)
         return False
+    logger.info("Activated support mode for user %s", support_user_id)
     await message.answer(SUPPORT_PROMPT)
     return True
 

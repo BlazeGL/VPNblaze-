@@ -33,6 +33,7 @@ from app.bot.services.support import (
 
 SUPPORT_CHAT_ID = -1001234567890
 USER_ID = 5104324589
+BOT_ID = 8633357281
 ADMIN_ID = 123456789
 TOPIC_ID = 731
 
@@ -215,10 +216,11 @@ def private_message(
     user: TelegramUser,
     *,
     text: str = "Не работает VPN",
+    chat_id: int | None = None,
 ) -> SimpleNamespace:
     return SimpleNamespace(
         bot=bot,
-        chat=SimpleNamespace(id=user.id, type=ChatType.PRIVATE),
+        chat=SimpleNamespace(id=chat_id or user.id, type=ChatType.PRIVATE),
         from_user=user,
         text=text,
         caption=None,
@@ -296,6 +298,26 @@ async def test_begin_support_uses_exact_prompt_and_confirmation_is_exact() -> No
         ].decode("utf-16-le")
         for entity in entities
     ] == ["/key", "/balance"]
+
+
+@pytest.mark.asyncio
+async def test_begin_support_from_bot_menu_uses_private_chat_user_id() -> None:
+    redis = FakeRedis()
+    bot_sender = telegram_user(user_id=BOT_ID, first_name="BlazeVPN", is_bot=True)
+    message = private_message(fake_bot(), bot_sender, chat_id=USER_ID)
+    state = SimpleNamespace(clear=AsyncMock())
+    settings = SimpleNamespace(support_group_id=SUPPORT_CHAT_ID)
+
+    assert await begin_support(
+        message,
+        state=state,
+        redis_client=redis,  # type: ignore[arg-type]
+        settings=settings,  # type: ignore[arg-type]
+    )
+
+    store = SupportStore(redis, SUPPORT_CHAT_ID)  # type: ignore[arg-type]
+    assert await store.get_mode(USER_ID) == "waiting"
+    assert await store.get_mode(BOT_ID) is None
 
 
 def test_topic_title_is_truncated_to_telegram_limit_and_keeps_user_id() -> None:
