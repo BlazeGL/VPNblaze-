@@ -109,7 +109,7 @@ def test_each_active_tariff_is_available_from_catalog_card() -> None:
     buttons = [button for row in markup.inline_keyboard for button in row]
 
     assert [button.text for button in buttons[:2]] == [
-        "• BlazeVPN — 30 дней · 99 ₽",
+        "✅ BlazeVPN — 30 дней · 99 ₽",
         "BlazeVPN — 90 дней · 249.5 ₽",
     ]
     assert all(button.callback_data for button in buttons[:2])

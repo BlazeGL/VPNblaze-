@@ -15,7 +15,7 @@ def show_price_in_button(tariff: Tariff) -> bool:
 
 
 def tariff_button_text(tariff: Tariff, *, selected: bool = False) -> str:
-    marker = "• " if selected else ""
+    marker = "✅ " if selected else ""
     show_price = show_price_in_button(tariff)
     max_name_length = 42 if show_price else 58
     name = (
