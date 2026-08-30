@@ -3,7 +3,6 @@ import logging
 
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
-from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.fsm.storage.redis import RedisStorage
 from redis.asyncio import Redis
 
@@ -14,6 +13,7 @@ from app.bot.services.telegram_retry import (
     TELEGRAM_REQUEST_TIMEOUT_SECONDS,
     TelegramNetworkRetryMiddleware,
 )
+from app.bot.services.telegram_session import ResilientTelegramSession
 from app.core.config import get_settings
 from app.core.crypto import SubscriptionUrlCipher
 from app.core.logging import configure_logging
@@ -33,7 +33,9 @@ async def main() -> None:
     engine, session_factory = create_engine_and_session(settings.database_url)
     storage = RedisStorage.from_url(settings.redis_url)
     redis_client = Redis.from_url(settings.redis_url, decode_responses=True)
-    telegram_session = AiohttpSession(timeout=TELEGRAM_REQUEST_TIMEOUT_SECONDS)
+    telegram_session = ResilientTelegramSession(
+        timeout=TELEGRAM_REQUEST_TIMEOUT_SECONDS
+    )
     telegram_session.middleware(TelegramNetworkRetryMiddleware())
     bot = Bot(
         token=settings.telegram_bot_token,
