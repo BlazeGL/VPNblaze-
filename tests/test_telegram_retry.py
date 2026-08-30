@@ -2,7 +2,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 from aiogram.exceptions import TelegramNetworkError
-from aiogram.methods import GetMe
+from aiogram.methods import GetMe, GetUpdates
 
 from app.bot.services.telegram_retry import TelegramNetworkRetryMiddleware
 
@@ -38,3 +38,18 @@ async def test_telegram_network_retry_raises_after_last_attempt() -> None:
         await middleware(make_request, object(), GetMe())  # type: ignore[arg-type]
 
     assert make_request.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_long_polling_uses_dispatcher_retry_without_nested_attempts() -> None:
+    make_request = AsyncMock(side_effect=network_error())
+    middleware = TelegramNetworkRetryMiddleware(max_attempts=3, base_delay=0.5)
+
+    with pytest.raises(TelegramNetworkError):
+        await middleware(
+            make_request,
+            object(),  # type: ignore[arg-type]
+            GetUpdates(timeout=10),
+        )
+
+    assert make_request.await_count == 1

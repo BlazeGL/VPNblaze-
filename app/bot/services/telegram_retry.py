@@ -11,6 +11,7 @@ logger = logging.getLogger(__name__)
 TELEGRAM_REQUEST_TIMEOUT_SECONDS = 10.0
 TELEGRAM_REQUEST_MAX_ATTEMPTS = 3
 TELEGRAM_REQUEST_RETRY_BASE_DELAY_SECONDS = 0.5
+TELEGRAM_POLLING_METHOD = "getUpdates"
 
 
 class TelegramNetworkRetryMiddleware:
@@ -36,6 +37,13 @@ class TelegramNetworkRetryMiddleware:
         method: Any,
     ) -> Any:
         method_name = getattr(method, "__api_method__", type(method).__name__)
+        # Dispatcher has its own endless polling retry with backoff. Retrying a
+        # failed long-poll request here as well multiplies its 20-second request
+        # timeout by max_attempts and can leave the bot without updates for more
+        # than a minute during a transient Telegram network outage.
+        if method_name == TELEGRAM_POLLING_METHOD:
+            return await make_request(bot, method)
+
         for attempt in range(1, self.max_attempts + 1):
             try:
                 return await make_request(bot, method)
