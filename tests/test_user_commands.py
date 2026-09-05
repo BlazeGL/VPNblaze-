@@ -7,7 +7,12 @@ from aiogram.enums import ChatType
 from aiogram.types import BotCommandScopeAllPrivateChats, BotCommandScopeChat
 
 from app.bot.handlers import setup_routers, user_commands
-from app.bot.handlers.promos import PromoInput, enter_promo_from_menu
+from app.bot.handlers.promos import (
+    PromoCodeTextFilter,
+    PromoInput,
+    apply_promo_from_any_screen,
+    enter_promo_from_menu,
+)
 from app.bot.handlers.user_commands import (
     PRIVATE_COMMANDS,
     _transaction_line,
@@ -21,7 +26,7 @@ from app.bot.services.command_menu import (
     PUBLIC_COMMANDS,
     register_command_menu,
 )
-from app.database.models import BalanceTransactionType, Tariff
+from app.database.models import BalanceTransactionType, OrderPurpose, Tariff
 
 
 def private_message(user_id: int = 123) -> MagicMock:
@@ -30,6 +35,17 @@ def private_message(user_id: int = 123) -> MagicMock:
     message.from_user.id = user_id
     message.answer = AsyncMock()
     return message
+
+
+def async_session_factory(session: MagicMock) -> MagicMock:
+    transaction = MagicMock()
+    transaction.__aenter__ = AsyncMock(return_value=None)
+    transaction.__aexit__ = AsyncMock(return_value=False)
+    session.begin.return_value = transaction
+    context = MagicMock()
+    context.__aenter__ = AsyncMock(return_value=session)
+    context.__aexit__ = AsyncMock(return_value=False)
+    return MagicMock(return_value=context)
 
 
 @pytest.mark.asyncio
@@ -105,6 +121,83 @@ async def test_promo_entry_clears_conflicting_state_and_starts_existing_fsm(
     state.update_data.assert_awaited_once_with(order_id=str(order.id))
     prompt = callback.message.answer.await_args
     assert "Активация промокода" in prompt.args[0]
+
+
+@pytest.mark.asyncio
+async def test_known_promo_is_detected_as_plain_text_from_any_screen(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    message = private_message()
+    message.text = "  vpn2026  "
+    promo_service = MagicMock()
+    promo_service.get_by_code = AsyncMock(return_value=SimpleNamespace(code="VPN2026"))
+    monkeypatch.setattr(
+        "app.bot.handlers.promos.PromoService",
+        MagicMock(return_value=promo_service),
+    )
+
+    result = await PromoCodeTextFilter()(message, async_session_factory(MagicMock()))
+
+    assert result == {"promo_code": "VPN2026"}
+    promo_service.get_by_code.assert_awaited_once_with("VPN2026")
+
+
+@pytest.mark.asyncio
+async def test_unknown_plain_text_is_not_intercepted_as_promo(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    message = private_message()
+    message.text = "Сообщение для поддержки"
+    promo_service = MagicMock()
+    promo_service.get_by_code = AsyncMock(return_value=None)
+    monkeypatch.setattr(
+        "app.bot.handlers.promos.PromoService",
+        MagicMock(return_value=promo_service),
+    )
+
+    result = await PromoCodeTextFilter()(message, async_session_factory(MagicMock()))
+
+    assert result is False
+    promo_service.get_by_code.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_plain_promo_is_saved_until_user_selects_tariff(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    message = private_message()
+    state = MagicMock()
+    state.update_data = AsyncMock()
+    user_repository = MagicMock()
+    user_repository.get_by_telegram_id = AsyncMock(return_value=SimpleNamespace(id=7))
+    order_repository = MagicMock()
+    order_repository.get_latest_pending_for_user = AsyncMock(return_value=None)
+    monkeypatch.setattr(
+        "app.bot.handlers.promos.UserRepository",
+        MagicMock(return_value=user_repository),
+    )
+    monkeypatch.setattr(
+        "app.bot.handlers.promos.OrderRepository",
+        MagicMock(return_value=order_repository),
+    )
+
+    await apply_promo_from_any_screen(
+        message,
+        "VPN2026",
+        state,
+        async_session_factory(MagicMock()),
+    )
+
+    state.update_data.assert_awaited_once_with(pending_promo_code="VPN2026")
+    order_repository.get_latest_pending_for_user.assert_awaited_once_with(
+        7,
+        purpose=OrderPurpose.subscription_purchase,
+        for_update=True,
+    )
+    answer = message.answer.await_args
+    assert "Промокод сохранён" in answer.args[0]
+    button = answer.kwargs["reply_markup"].inline_keyboard[0][0]
+    assert button.callback_data == "tariffs"
 
 
 def test_balance_operation_is_rendered_for_user() -> None:

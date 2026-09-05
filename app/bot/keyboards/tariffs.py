@@ -1,6 +1,6 @@
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
-from app.bot.callbacks import OrderCallback, PromoCallback, TariffCallback
+from app.bot.callbacks import OrderCallback, TariffCallback
 from app.database.models import Order, Payment, Tariff
 
 
@@ -70,17 +70,9 @@ def build_order(order: Order) -> InlineKeyboardMarkup:
         inline_keyboard=[
             [
                 InlineKeyboardButton(
-                    text=f"💰 Купить с баланса за {money(order.original_amount)}",
+                    text=f"💰 Купить с баланса за {money(order.final_amount)}",
                     callback_data=OrderCallback(
                         action="balance", order_id=order_id
-                    ).pack(),
-                )
-            ],
-            [
-                InlineKeyboardButton(
-                    text="🎟 Применить промокод",
-                    callback_data=PromoCallback(
-                        action="apply", order_id=order_id
                     ).pack(),
                 )
             ],

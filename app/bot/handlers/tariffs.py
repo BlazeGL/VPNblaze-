@@ -29,6 +29,11 @@ from app.bot.keyboards.tariffs import (
     build_tariff_card,
     money,
 )
+from app.bot.promo_context import (
+    clear_pending_promo_code,
+    get_pending_promo_code,
+    promo_error_message,
+)
 from app.bot.rendering import edit_text_or_caption
 from app.core.crypto import SubscriptionUrlCipher
 from app.database.models import OrderPurpose, Payment, Tariff
@@ -44,6 +49,7 @@ from app.integrations.yookassa.exceptions import YooKassaError
 from app.services.activation_notifications import send_activation_notification
 from app.services.billing import BillingService, BillingValidationError
 from app.services.payments import PaymentService, PaymentValidationError
+from app.services.promos import PromoService, PromoValidationError
 from app.services.remnawave_factory import build_subscription_service
 
 logger = logging.getLogger(__name__)
@@ -138,7 +144,10 @@ async def buy_tariff(
     callback: CallbackQuery,
     callback_data: TariffCallback,
     session_factory: async_sessionmaker[AsyncSession],
+    state: FSMContext,
 ) -> None:
+    pending_promo_code = await get_pending_promo_code(state)
+    promo_notice = ""
     async with session_factory() as session, session.begin():
         user = await UserRepository(session).get_by_telegram_id(callback.from_user.id)
         tariff = await TariffRepository(session).get_by_id(callback_data.tariff_id)
@@ -149,17 +158,36 @@ async def buy_tariff(
             await callback.answer("Тариф недоступен", show_alert=True)
             return
         order = await OrderRepository(session).create_from_tariff(user.id, tariff)
+        if pending_promo_code:
+            try:
+                await PromoService(session).apply_to_order(
+                    order,
+                    user_id=user.id,
+                    code=pending_promo_code,
+                    actor_telegram_id=callback.from_user.id,
+                )
+            except PromoValidationError as exc:
+                promo_notice = (
+                    f"⚠️ {promo_error_message(exc.reason)}\n"
+                    "Отправьте другой промокод обычным сообщением.\n\n"
+                )
+            else:
+                promo_notice = "✅ Промокод применён автоматически.\n\n"
+    if pending_promo_code:
+        await clear_pending_promo_code(state)
     order_traffic = traffic(
         order.traffic_limit_gb_snapshot, order.is_unlimited_traffic_snapshot
     )
     text = (
         "🧾 Заказ создан\n\n"
+        f"{promo_notice}"
         f"Тариф: {order.tariff_name_snapshot}\n"
         f"Срок: {order.duration_days_snapshot} дней\n"
         f"Трафик: {order_traffic}\n"
         f"Устройства: до {order.device_limit_snapshot}\n"
         f"К оплате: {money(order.final_amount, order.currency_snapshot)}\n\n"
         f"Ваш баланс: {money(user.balance)}\n\n"
+        "Есть промокод? Просто отправьте его сообщением.\n\n"
         "Подтвердите покупку с баланса или оплатите заказ через ЮKassa.\n\n"
         f"Номер заказа: {str(order.id)[:8]}"
     )

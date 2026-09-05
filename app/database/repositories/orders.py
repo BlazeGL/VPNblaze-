@@ -81,13 +81,23 @@ class OrderRepository:
         )
         return list(result)
 
-    async def get_latest_pending_for_user(self, user_id: int) -> Order | None:
-        return await self.session.scalar(
-            select(Order)
-            .where(Order.user_id == user_id, Order.status.in_(self.CANCELLABLE))
-            .order_by(Order.created_at.desc())
-            .limit(1)
+    async def get_latest_pending_for_user(
+        self,
+        user_id: int,
+        *,
+        purpose: OrderPurpose | None = None,
+        for_update: bool = False,
+    ) -> Order | None:
+        query = select(Order).where(
+            Order.user_id == user_id,
+            Order.status.in_(self.CANCELLABLE),
         )
+        if purpose is not None:
+            query = query.where(Order.purpose == purpose)
+        query = query.order_by(Order.created_at.desc()).limit(1)
+        if for_update:
+            query = query.with_for_update()
+        return await self.session.scalar(query)
 
     async def update_status(
         self, order: Order | uuid.UUID | str, status: OrderStatus

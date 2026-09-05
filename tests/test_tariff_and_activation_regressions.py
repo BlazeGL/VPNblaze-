@@ -1,12 +1,15 @@
 import uuid
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from app.bot.handlers import tariffs as tariff_handlers
 from app.bot.handlers import user_commands
-from app.bot.handlers.tariffs import render_tariff_screen
+from app.bot.handlers.tariffs import buy_tariff, render_tariff_screen
+from app.bot.keyboards.tariffs import build_order
 from app.database.models import (
     ProvisioningOperation,
     ProvisioningOperationStatus,
@@ -135,6 +138,98 @@ def test_catalog_can_hide_actual_price_and_keep_custom_monthly_text() -> None:
 
     assert buttons[1].text == "🔥 Пополнить на 3 месяца — 139 ₽/мес"
     assert "417" not in buttons[1].text
+
+
+def test_order_menu_uses_discounted_price_without_promo_button() -> None:
+    order = SimpleNamespace(
+        id=uuid.uuid4(),
+        original_amount=Decimal("99.00"),
+        final_amount=Decimal("79.00"),
+    )
+
+    buttons = [
+        button for row in build_order(order).inline_keyboard for button in row
+    ]
+
+    assert buttons[0].text == "💰 Купить с баланса за 79 ₽"
+    assert all("промокод" not in button.text.lower() for button in buttons)
+
+
+@pytest.mark.asyncio
+async def test_saved_plain_promo_is_applied_when_tariff_is_selected(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    callback = MagicMock()
+    callback.from_user.id = 123
+    callback.answer = AsyncMock()
+    callback.message = MagicMock()
+    callback_data = SimpleNamespace(tariff_id=1)
+    state = MagicMock()
+    state.get_data = AsyncMock(return_value={"pending_promo_code": "VPN2026"})
+    state.set_data = AsyncMock()
+    user = SimpleNamespace(id=7, balance=Decimal("150.00"))
+    tariff = canonical_tariff()
+    order = SimpleNamespace(
+        id=uuid.uuid4(),
+        user_id=user.id,
+        tariff_name_snapshot=tariff.name,
+        duration_days_snapshot=tariff.duration_days,
+        traffic_limit_gb_snapshot=tariff.traffic_limit_gb,
+        is_unlimited_traffic_snapshot=False,
+        device_limit_snapshot=tariff.device_limit,
+        currency_snapshot="RUB",
+        original_amount=Decimal("99.00"),
+        final_amount=Decimal("99.00"),
+    )
+    user_repository = MagicMock()
+    user_repository.get_by_telegram_id = AsyncMock(return_value=user)
+    tariff_repository = MagicMock()
+    tariff_repository.get_by_id = AsyncMock(return_value=tariff)
+    order_repository = MagicMock()
+    order_repository.create_from_tariff = AsyncMock(return_value=order)
+    promo_service = MagicMock()
+
+    async def apply_promo(*args: object, **kwargs: object) -> SimpleNamespace:
+        order.final_amount = Decimal("79.00")
+        return SimpleNamespace()
+
+    promo_service.apply_to_order = AsyncMock(side_effect=apply_promo)
+    monkeypatch.setattr(
+        tariff_handlers, "UserRepository", MagicMock(return_value=user_repository)
+    )
+    monkeypatch.setattr(
+        tariff_handlers, "TariffRepository", MagicMock(return_value=tariff_repository)
+    )
+    monkeypatch.setattr(
+        tariff_handlers, "OrderRepository", MagicMock(return_value=order_repository)
+    )
+    monkeypatch.setattr(
+        tariff_handlers, "PromoService", MagicMock(return_value=promo_service)
+    )
+    renderer = AsyncMock()
+    monkeypatch.setattr(tariff_handlers, "edit_text_or_caption", renderer)
+    session = MagicMock()
+    transaction = MagicMock()
+    transaction.__aenter__ = AsyncMock(return_value=None)
+    transaction.__aexit__ = AsyncMock(return_value=False)
+    session.begin.return_value = transaction
+    context = MagicMock()
+    context.__aenter__ = AsyncMock(return_value=session)
+    context.__aexit__ = AsyncMock(return_value=False)
+    session_factory = MagicMock(return_value=context)
+
+    await buy_tariff(callback, callback_data, session_factory, state)
+
+    promo_service.apply_to_order.assert_awaited_once_with(
+        order,
+        user_id=user.id,
+        code="VPN2026",
+        actor_telegram_id=123,
+    )
+    state.set_data.assert_awaited_once_with({})
+    rendered_text = renderer.await_args.args[1]
+    assert "Промокод применён автоматически" in rendered_text
+    assert "К оплате: 79 ₽" in rendered_text
 
 
 @pytest.mark.asyncio
