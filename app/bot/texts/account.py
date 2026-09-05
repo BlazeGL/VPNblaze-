@@ -185,7 +185,7 @@ def account_text(
     elif subscription.source_type == SubscriptionSource.trial:
         display_tariff = "Пробный период"
     else:
-        display_tariff = "Индивидуальный"
+        display_tariff = "BlazeVPN"
     heading = f"👤 <b>Моя подписка</b>\n\n{_status_heading(state)}"
     if state == "pending":
         return f"{heading}\n\nОбычно это занимает меньше минуты.", state
