@@ -47,6 +47,9 @@ class RemnawaveSyncService:
                 )
             else:
                 raise RemnawaveNotFoundError("Local Remnawave link is absent")
+            connected_devices = await self.client.get_user_hwid_devices_count(
+                remote.uuid
+            )
             if (
                 remote.username != subscription.remnawave_username
                 or remote.telegram_id != user.telegram_id
@@ -63,6 +66,9 @@ class RemnawaveSyncService:
             subscription.remnawave_sync_error = None
             subscription.used_traffic_bytes = remote.user_traffic.used_traffic_bytes
             subscription.remnawave_traffic_limit_bytes = remote.traffic_limit_bytes
+            subscription.connected_devices = connected_devices
+            if remote.hwid_device_limit is not None and remote.hwid_device_limit > 0:
+                subscription.device_limit = remote.hwid_device_limit
             subscription.provisioning_status = ProvisioningStatus.active
         except Exception as exc:
             subscription.remnawave_sync_error = str(exc)[:1000]

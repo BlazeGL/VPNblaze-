@@ -101,6 +101,18 @@ def format_traffic(
     return f"{used} из {subscription.traffic_limit_gb} ГБ"
 
 
+def format_devices(
+    subscription: Subscription, *, sync_unavailable: bool = False
+) -> str:
+    connected = getattr(subscription, "connected_devices", None)
+    limit = max(0, subscription.device_limit)
+    if connected is None or sync_unavailable:
+        return f"данные обновляются · лимит {limit}"
+    connected = max(0, int(connected))
+    available = max(0, limit - connected)
+    return f"{connected} из {limit} подключено · ещё {available} доступно"
+
+
 def get_account_state(
     subscription: Subscription,
     *,
@@ -208,7 +220,10 @@ def account_text(
             "🌐 Трафик: "
             f"<b>{format_traffic(subscription, sync_unavailable=sync_unavailable)}</b>"
         ),
-        f"📱 Устройства: <b>до {subscription.device_limit}</b>",
+        (
+            "📱 Устройства: "
+            f"<b>{format_devices(subscription, sync_unavailable=sync_unavailable)}</b>"
+        ),
         ]
     )
     if sync_unavailable:

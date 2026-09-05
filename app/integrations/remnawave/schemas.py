@@ -70,6 +70,15 @@ class UserResponse(RemnawaveModel):
     response: RemnawaveUser
 
 
+class HwidDevicesData(RemnawaveModel):
+    total: int = Field(ge=0)
+    devices: list[dict[str, object]] = Field(default_factory=list)
+
+
+class HwidDevicesResponse(RemnawaveModel):
+    response: HwidDevicesData
+
+
 class UsersPage(RemnawaveModel):
     users: list[RemnawaveUser]
     total: int

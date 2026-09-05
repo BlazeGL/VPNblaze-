@@ -26,6 +26,7 @@ from app.integrations.remnawave.exceptions import (
 from app.integrations.remnawave.schemas import (
     CreateUserRequest,
     DeleteResponse,
+    HwidDevicesResponse,
     InternalSquad,
     InternalSquadResponse,
     RemnawaveUser,
@@ -139,6 +140,15 @@ class RemnawaveClient:
             remnawave_username=username,
         )
         return wrapped.response
+
+    async def get_user_hwid_devices_count(self, user_uuid: UUID | str) -> int:
+        wrapped = await self._request_model(
+            HwidDevicesResponse,
+            "GET",
+            f"/api/hwid/devices/{quote(str(user_uuid), safe='')}",
+            operation="get_user_hwid_devices",
+        )
+        return wrapped.response.total
 
     async def get_internal_squad(self, squad_uuid: UUID | str) -> InternalSquad:
         wrapped = await self._request_model(

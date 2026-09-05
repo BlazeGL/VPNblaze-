@@ -40,6 +40,7 @@ from app.services.remnawave import (
     RemnawaveProvisioningService,
     validate_new_user_policy,
 )
+from app.services.remnawave_sync import RemnawaveSyncService
 
 SQUAD = uuid.UUID("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
 RUSSIA_SQUAD = uuid.UUID("cccccccc-cccc-4ccc-8ccc-cccccccccccc")
@@ -145,6 +146,23 @@ async def test_client_uses_documented_get_by_username_endpoint() -> None:
         "https://panel.example", "x", transport=httpx.MockTransport(handler)
     )
     assert (await client.get_user_by_username("tg_123_a4f82c")).uuid == USER_UUID
+    await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_client_gets_connected_device_count_from_hwid_endpoint() -> None:
+    async def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == f"/api/hwid/devices/{USER_UUID}"
+        return httpx.Response(
+            200,
+            json={"response": {"total": 3, "devices": [{}, {}, {}]}},
+        )
+
+    client = RemnawaveClient(
+        "https://panel.example", "x", transport=httpx.MockTransport(handler)
+    )
+
+    assert await client.get_user_hwid_devices_count(USER_UUID) == 3
     await client.aclose()
 
 
@@ -278,6 +296,28 @@ def configured_new_user(**kwargs: object) -> RemnawaveUser:
         hwid_device_limit=5,
         **kwargs,
     )
+
+
+@pytest.mark.asyncio
+async def test_profile_sync_updates_connected_devices_and_remote_limit() -> None:
+    user, subscription = make_local()
+    remote = remote_model(hwid_device_limit=10)
+    subscription.remnawave_user_uuid = str(USER_UUID)
+    subscription.remnawave_username = remote.username
+    client = MagicMock()
+    client.get_user = AsyncMock(return_value=remote)
+    client.get_user_hwid_devices_count = AsyncMock(return_value=3)
+    cipher = MagicMock()
+    cipher.encrypt.return_value = b"encrypted"
+
+    await RemnawaveSyncService(fake_session(), client, cipher).sync_one(
+        subscription,
+        user,
+    )
+
+    assert subscription.connected_devices == 3
+    assert subscription.device_limit == 10
+    client.get_user_hwid_devices_count.assert_awaited_once_with(USER_UUID)
 
 
 @pytest.mark.asyncio

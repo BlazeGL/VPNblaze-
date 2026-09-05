@@ -20,6 +20,7 @@ from app.bot.keyboards.subscription import (
 from app.bot.texts.account import (
     account_text,
     empty_account_text,
+    format_devices,
     format_time_left,
     format_traffic,
     get_subscription_status_text,
@@ -248,6 +249,7 @@ def make_subscription(**overrides: object) -> SimpleNamespace:
         "is_unlimited_traffic": False,
         "used_traffic_bytes": int(34.2 * 1024**3),
         "device_limit": 3,
+        "connected_devices": 1,
     }
     values.update(overrides)
     return SimpleNamespace(**values)
@@ -263,6 +265,22 @@ def test_unlimited_traffic_has_plain_language_label() -> None:
     subscription = make_subscription(is_unlimited_traffic=True)
 
     assert format_traffic(subscription) == "Без ограничений"  # type: ignore[arg-type]
+
+
+def test_device_usage_shows_connected_and_available_slots() -> None:
+    subscription = make_subscription(device_limit=10, connected_devices=3)
+
+    assert format_devices(subscription) == (  # type: ignore[arg-type]
+        "3 из 10 подключено · ещё 7 доступно"
+    )
+
+
+def test_device_usage_does_not_claim_stale_count_after_sync_error() -> None:
+    subscription = make_subscription(device_limit=10, connected_devices=3)
+
+    assert format_devices(  # type: ignore[arg-type]
+        subscription, sync_unavailable=True
+    ) == "данные обновляются · лимит 10"
 
 
 def test_account_hides_technical_fields_and_keeps_local_data_on_sync_error() -> None:
