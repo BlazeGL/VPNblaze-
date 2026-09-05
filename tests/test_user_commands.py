@@ -266,7 +266,7 @@ async def test_bonus_days_promo_activates_without_payment_screen(
 
     answer = message.answer.await_args
     assert "Добавлено: <b>7 дней</b>" in answer.args[0]
-    assert "Оплата не требуется" in answer.args[0]
+    assert "Оплата не требуется" not in answer.args[0]
     callbacks = {
         button.callback_data
         for row in answer.kwargs["reply_markup"].inline_keyboard

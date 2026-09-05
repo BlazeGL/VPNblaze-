@@ -212,8 +212,7 @@ async def _send_bonus_days_success(
         "✅ <b>Промокод активирован</b>\n\n"
         f"🎁 Добавлено: <b>{redemption.bonus_days} дней</b>\n"
         "📅 Подписка действует до: "
-        f"<b>{format_expiration(subscription.expires_at)}</b>\n\n"
-        "Оплата не требуется."
+        f"<b>{format_expiration(subscription.expires_at)}</b>"
         f"{sync_note}",
         reply_markup=InlineKeyboardMarkup(
             inline_keyboard=[
