@@ -270,9 +270,7 @@ def test_unlimited_traffic_has_plain_language_label() -> None:
 def test_device_usage_shows_connected_and_available_slots() -> None:
     subscription = make_subscription(device_limit=10, connected_devices=3)
 
-    assert format_devices(subscription) == (  # type: ignore[arg-type]
-        "3 из 10 подключено · ещё 7 доступно"
-    )
+    assert format_devices(subscription) == "3 из 10 подключено"  # type: ignore[arg-type]
 
 
 def test_device_usage_does_not_claim_stale_count_after_sync_error() -> None:

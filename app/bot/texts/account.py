@@ -109,8 +109,7 @@ def format_devices(
     if connected is None or sync_unavailable:
         return f"данные обновляются · лимит {limit}"
     connected = max(0, int(connected))
-    available = max(0, limit - connected)
-    return f"{connected} из {limit} подключено · ещё {available} доступно"
+    return f"{connected} из {limit} подключено"
 
 
 def get_account_state(
