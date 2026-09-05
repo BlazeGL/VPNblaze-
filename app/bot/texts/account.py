@@ -185,7 +185,7 @@ def account_text(
     elif subscription.source_type == SubscriptionSource.trial:
         display_tariff = "Пробный период"
     else:
-        display_tariff = "BlazeVPN"
+        display_tariff = None
     heading = f"👤 <b>Моя подписка</b>\n\n{_status_heading(state)}"
     if state == "pending":
         return f"{heading}\n\nОбычно это занимает меньше минуты.", state
@@ -198,16 +198,19 @@ def account_text(
         date_label = "Закончилась" if state == "expired" else "Была активна до"
         return f"{heading}\n\n📅 {date_label}: <b>{expiration_text}</b>", state
 
-    lines = [
-        heading,
-        f"📦 Тариф: <b>{escape(display_tariff)}</b>",
+    lines = [heading]
+    if display_tariff is not None:
+        lines.append(f"📦 Тариф: <b>{escape(display_tariff)}</b>")
+    lines.extend(
+        [
         f"📅 До <b>{expiration_text}</b> · осталось <b>{time_left}</b>",
         (
             "🌐 Трафик: "
             f"<b>{format_traffic(subscription, sync_unavailable=sync_unavailable)}</b>"
         ),
         f"📱 Устройства: <b>до {subscription.device_limit}</b>",
-    ]
+        ]
+    )
     if sync_unavailable:
         lines.append("⚠️ Показана последняя сохранённая информация.")
     text = "\n\n".join(lines)

@@ -289,6 +289,19 @@ def test_account_hides_technical_fields_and_keeps_local_data_on_sync_error() -> 
     assert "Remnawave" not in text
 
 
+def test_account_hides_tariff_row_for_unlinked_subscription() -> None:
+    subscription = make_subscription(source_type=SubscriptionSource.admin)
+
+    text, state = account_text(  # type: ignore[arg-type]
+        subscription,
+        None,
+        now=datetime(2026, 8, 1, tzinfo=UTC),
+    )
+
+    assert state == "active"
+    assert "Тариф:" not in text
+
+
 def test_empty_account_text_mentions_trial_only_when_available() -> None:
     assert "30 дней" in empty_account_text(trial_available=True)
     assert "30 дней" not in empty_account_text(trial_available=False)
