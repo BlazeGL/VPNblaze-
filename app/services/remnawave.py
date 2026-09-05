@@ -272,6 +272,7 @@ class RemnawaveProvisioningService:
         *,
         source: SubscriptionSource | str | None = None,
         order_id: uuid.UUID | None = None,
+        idempotency_key: str | None = None,
     ) -> ProvisioningResult:
         if not self.internal_squad_uuid:
             return await self._fail(
@@ -292,7 +293,11 @@ class RemnawaveProvisioningService:
                 RemnawaveConfigurationError("REMNAWAVE_INTERNAL_SQUAD_UUID is invalid"),
             )
         operation = await self._get_or_create_operation(
-            subscription, user, source or subscription.source_type, order_id
+            subscription,
+            user,
+            source or subscription.source_type,
+            order_id,
+            idempotency_key=idempotency_key,
         )
         if operation.status == ProvisioningOperationStatus.completed:
             was_active = subscription.status == SubscriptionStatus.active
@@ -607,11 +612,15 @@ class RemnawaveProvisioningService:
         user: User,
         source: SubscriptionSource | str,
         order_id: uuid.UUID | None,
+        *,
+        idempotency_key: str | None = None,
     ) -> ProvisioningOperation:
         source_value = (
             source.value if isinstance(source, SubscriptionSource) else source
         )
-        if order_id:
+        if idempotency_key is not None:
+            key = idempotency_key
+        elif order_id:
             key = f"order:{order_id}"
         elif source_value == SubscriptionSource.admin.value:
             key = f"admin:{subscription.id}:{subscription.expires_at.isoformat()}"
@@ -704,6 +713,21 @@ class RemnawaveSubscriptionAdapter:
             user,
             source=subscription.source_type,
             order_id=subscription.order_id,
+        )
+
+    async def provision_bonus(
+        self,
+        subscription: Subscription,
+        user: User,
+        *,
+        redemption_id: uuid.UUID,
+    ) -> ProvisioningResult:
+        return await self.service.provision(
+            subscription,
+            user,
+            source=SubscriptionSource.promo,
+            order_id=None,
+            idempotency_key=f"promo:{redemption_id}",
         )
 
     async def order_was_applied(self, order_id: uuid.UUID) -> bool:

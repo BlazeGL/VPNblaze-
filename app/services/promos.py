@@ -14,9 +14,12 @@ from app.database.models import (
     PromoCodeTariff,
     PromoCodeUsage,
     PromoDiscountType,
+    Subscription,
     Tariff,
+    User,
 )
 from app.services.audit import add_audit_log
+from app.services.subscriptions import SubscriptionService
 
 MONEY_STEP = Decimal("0.01")
 CODE_PATTERN = re.compile(r"^[A-ZА-ЯЁ0-9_-]{2,64}$")
@@ -35,6 +38,13 @@ class PromoApplication:
     discount_amount: Decimal
     final_amount: Decimal
     bonus_days: int
+
+
+@dataclass(frozen=True)
+class PromoBonusRedemption:
+    promo_code: PromoCode
+    bonus_days: int
+    subscription: Subscription
 
 
 def normalize_promo_code(code: str) -> str:
@@ -152,6 +162,8 @@ class PromoService:
         promo = await self.get_by_code(code, for_update=True)
         if promo is None:
             raise PromoValidationError("not_found")
+        if promo.discount_type == PromoDiscountType.bonus_days:
+            raise PromoValidationError("bonus_days_direct_only")
         original = Decimal(order.original_amount or order.amount_snapshot)
         application = await self.validate(
             promo,
@@ -183,6 +195,80 @@ class PromoService:
         )
         await self.session.flush()
         return application
+
+    async def redeem_bonus_days(
+        self,
+        *,
+        user: User,
+        code: str,
+        subscription_service: SubscriptionService,
+        actor_telegram_id: int | None = None,
+        now: datetime | None = None,
+    ) -> PromoBonusRedemption:
+        moment = now or datetime.now(UTC)
+        promo = await self.get_by_code(code, for_update=True)
+        if promo is None:
+            raise PromoValidationError("not_found")
+        if promo.discount_type != PromoDiscountType.bonus_days:
+            raise PromoValidationError("not_bonus_days")
+        if not promo.is_active:
+            raise PromoValidationError("inactive")
+        if promo.valid_from is not None and promo.valid_from > moment:
+            raise PromoValidationError("not_started")
+        if promo.valid_until is not None and promo.valid_until <= moment:
+            raise PromoValidationError("expired")
+        if promo.max_uses is not None and promo.uses_count >= promo.max_uses:
+            raise PromoValidationError("max_uses_reached")
+
+        user_uses = await self.session.scalar(
+            select(func.count(PromoCodeUsage.id)).where(
+                PromoCodeUsage.promo_code_id == promo.id,
+                PromoCodeUsage.user_id == user.id,
+            )
+        )
+        if (user_uses or 0) >= promo.per_user_limit:
+            raise PromoValidationError("per_user_limit_reached")
+
+        subscription = await subscription_service.get_for_update(user.id)
+        if subscription is None:
+            raise PromoValidationError("subscription_required")
+        bonus_days = promo.bonus_days or int(promo.discount_value)
+        usage = PromoCodeUsage(
+            promo_code_id=promo.id,
+            user_id=user.id,
+            order_id=None,
+            discount_amount=Decimal("0.00"),
+            bonus_days=bonus_days,
+        )
+        self.session.add(usage)
+        promo.uses_count += 1
+        await self.session.flush()
+        subscription = await subscription_service.extend_with_bonus_days(
+            user,
+            bonus_days,
+            redemption_id=usage.id,
+            locked_subscription=subscription,
+            now=moment,
+        )
+        add_audit_log(
+            self.session,
+            action="promo_bonus_days_redeemed",
+            entity_type="promo_code_usage",
+            entity_id=usage.id,
+            actor_user_id=user.id,
+            actor_telegram_id=actor_telegram_id,
+            details={
+                "promo_code": promo.code,
+                "bonus_days": bonus_days,
+                "expires_at": subscription.expires_at.isoformat(),
+            },
+        )
+        await self.session.flush()
+        return PromoBonusRedemption(
+            promo_code=promo,
+            bonus_days=bonus_days,
+            subscription=subscription,
+        )
 
     async def consume_for_paid_order(self, order: Order) -> PromoCodeUsage | None:
         if order.promo_code_id is None:
@@ -250,6 +336,9 @@ class PromoService:
             bonus_days is None or bonus_days <= 0
         ):
             raise PromoValidationError("bonus_days_positive")
+        if discount_type == PromoDiscountType.bonus_days:
+            minimum_order_amount = None
+            tariff_ids = None
         promo = PromoCode(
             code=normalized,
             discount_type=discount_type,

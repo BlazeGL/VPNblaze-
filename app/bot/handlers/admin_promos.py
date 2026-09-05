@@ -291,6 +291,14 @@ async def promo_value_step(message: Message, state: FSMContext) -> None:
         if discount_type == PromoDiscountType.bonus_days
         else None,
     )
+    if discount_type == PromoDiscountType.bonus_days:
+        await state.update_data(tariff_ids=None, minimum_order_amount=None)
+        await state.set_state(PromoForm.max_uses)
+        await message.answer(
+            "Максимальное количество использований или «без ограничений»:",
+            reply_markup=admin_navigation("promos"),
+        )
+        return
     await state.set_state(PromoForm.scope)
     await message.answer("Выберите тарифы:", reply_markup=promo_scope_keyboard())
 
@@ -458,6 +466,15 @@ async def promo_per_user_step(message: Message, state: FSMContext) -> None:
         await message.answer("Введите целое число больше 0.")
         return
     await state.update_data(per_user_limit=value)
+    data = await state.get_data()
+    if data.get("discount_type") == PromoDiscountType.bonus_days.value:
+        await state.update_data(minimum_order_amount=None)
+        await state.set_state(PromoForm.valid_from)
+        await message.answer(
+            "Дата начала в UTC (ДД.ММ.ГГГГ ЧЧ:ММ) или «сразу»:",
+            reply_markup=admin_navigation("promos"),
+        )
+        return
     await state.set_state(PromoForm.minimum_amount)
     await message.answer(
         "Минимальная сумма заказа или «-», чтобы пропустить:",

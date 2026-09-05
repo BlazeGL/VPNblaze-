@@ -23,15 +23,25 @@ from app.bot.promo_context import (
     promo_error_message,
     remember_pending_promo_code,
 )
+from app.bot.texts.subscription import format_expiration
 from app.core.config import Settings
-from app.database.models import Order, OrderPurpose
+from app.core.crypto import SubscriptionUrlCipher
+from app.database.models import (
+    Order,
+    OrderPurpose,
+    PromoDiscountType,
+    SubscriptionStatus,
+)
 from app.database.repositories import OrderRepository, UserRepository
+from app.integrations.remnawave.client import RemnawaveClient
 from app.services.promos import (
     PromoApplication,
+    PromoBonusRedemption,
     PromoService,
     PromoValidationError,
     validate_code_format,
 )
+from app.services.remnawave_factory import build_subscription_service
 
 router = Router(name=__name__)
 
@@ -76,15 +86,9 @@ async def enter_promo_from_menu(
             if user is not None
             else None
         )
-    if order is None:
-        await callback.answer()
-        if callback.message:
-            await callback.message.answer(
-                "Сначала выберите тариф и создайте заказ, затем примените промокод."
-            )
-        return
     await state.set_state(PromoInput.code)
-    await state.update_data(order_id=str(order.id))
+    if order is not None:
+        await state.update_data(order_id=str(order.id))
     await callback.answer()
     if callback.message:
         await callback.message.answer(
@@ -193,17 +197,61 @@ async def _send_promo_success(
     )
 
 
+async def _send_bonus_days_success(
+    message: Message,
+    redemption: PromoBonusRedemption,
+) -> None:
+    subscription = redemption.subscription
+    sync_note = ""
+    if subscription.status != SubscriptionStatus.active:
+        sync_note = (
+            "\n\n⚠️ Дни уже начислены. Обновление VPN-сервера будет "
+            "повторено автоматически."
+        )
+    await message.answer(
+        "✅ <b>Промокод активирован</b>\n\n"
+        f"🎁 Добавлено: <b>{redemption.bonus_days} дней</b>\n"
+        "📅 Подписка действует до: "
+        f"<b>{format_expiration(subscription.expires_at)}</b>\n\n"
+        "Оплата не требуется."
+        f"{sync_note}",
+        reply_markup=InlineKeyboardMarkup(
+            inline_keyboard=[
+                [
+                    InlineKeyboardButton(
+                        text="👤 Моя подписка",
+                        callback_data="my_subscription",
+                    )
+                ],
+                [
+                    InlineKeyboardButton(
+                        text="⬅️ Главное меню",
+                        callback_data="main_menu",
+                    )
+                ],
+            ]
+        ),
+        parse_mode="HTML",
+    )
+
+
 @router.message(StateFilter(None), PromoCodeTextFilter())
 async def apply_promo_from_any_screen(
     message: Message,
     promo_code: str,
     state: FSMContext,
     session_factory: async_sessionmaker[AsyncSession],
+    remnawave_client: RemnawaveClient | None = None,
+    subscription_cipher: SubscriptionUrlCipher | None = None,
+    remnawave_internal_squad_uuid: str | None = None,
+    remnawave_russia_squad_uuid: str | None = None,
+    remnawave_template_user_uuid: str | None = None,
 ) -> None:
     if message.from_user is None:
         return
     order: Order | None = None
     application: PromoApplication | None = None
+    redemption: PromoBonusRedemption | None = None
     user_exists = True
     try:
         async with session_factory() as session, session.begin():
@@ -213,18 +261,39 @@ async def apply_promo_from_any_screen(
             if user is None:
                 user_exists = False
             else:
-                order = await OrderRepository(session).get_latest_pending_for_user(
-                    user.id,
-                    purpose=OrderPurpose.subscription_purchase,
-                    for_update=True,
-                )
-                if order is not None:
-                    application = await PromoService(session).apply_to_order(
-                        order,
-                        user_id=user.id,
+                promo_service = PromoService(session)
+                promo = await promo_service.get_by_code(promo_code)
+                if promo is None:
+                    raise PromoValidationError("not_found")
+                if promo.discount_type == PromoDiscountType.bonus_days:
+                    redemption = await promo_service.redeem_bonus_days(
+                        user=user,
                         code=promo_code,
+                        subscription_service=build_subscription_service(
+                            session,
+                            remnawave_client,
+                            subscription_cipher,
+                            remnawave_internal_squad_uuid,
+                            remnawave_russia_squad_uuid,
+                            remnawave_template_user_uuid,
+                        ),
                         actor_telegram_id=message.from_user.id,
                     )
+                else:
+                    order = (
+                        await OrderRepository(session).get_latest_pending_for_user(
+                            user.id,
+                            purpose=OrderPurpose.subscription_purchase,
+                            for_update=True,
+                        )
+                    )
+                    if order is not None:
+                        application = await promo_service.apply_to_order(
+                            order,
+                            user_id=user.id,
+                            code=promo_code,
+                            actor_telegram_id=message.from_user.id,
+                        )
     except PromoValidationError as exc:
         await clear_pending_promo_code(state)
         await message.answer(promo_error_message(exc.reason))
@@ -232,6 +301,10 @@ async def apply_promo_from_any_screen(
 
     if not user_exists:
         await message.answer("Сначала нажмите /start.")
+        return
+    if redemption is not None:
+        await clear_pending_promo_code(state)
+        await _send_bonus_days_success(message, redemption)
         return
     if order is None or application is None:
         await remember_pending_promo_code(state, promo_code)
@@ -262,28 +335,68 @@ async def apply_promo(
     message: Message,
     state: FSMContext,
     session_factory: async_sessionmaker[AsyncSession],
+    remnawave_client: RemnawaveClient | None = None,
+    subscription_cipher: SubscriptionUrlCipher | None = None,
+    remnawave_internal_squad_uuid: str | None = None,
+    remnawave_russia_squad_uuid: str | None = None,
+    remnawave_template_user_uuid: str | None = None,
 ) -> None:
     if not message.text:
         await message.answer("Введите промокод текстом.")
         return
     data = await state.get_data()
+    order: Order | None = None
+    application: PromoApplication | None = None
+    redemption: PromoBonusRedemption | None = None
     try:
-        order_id = uuid.UUID(str(data.get("order_id")))
         async with session_factory() as session, session.begin():
             user = await UserRepository(session).get_by_telegram_id(
                 message.from_user.id
             )
-            order = await session.scalar(
-                select(Order).where(Order.id == order_id).with_for_update()
-            )
-            if user is None or order is None or order.user_id != user.id:
+            if user is None:
                 raise PromoValidationError("foreign_order")
-            application = await PromoService(session).apply_to_order(
-                order,
-                user_id=user.id,
-                code=message.text,
-                actor_telegram_id=message.from_user.id,
-            )
+            promo_service = PromoService(session)
+            promo = await promo_service.get_by_code(message.text)
+            if promo is None:
+                raise PromoValidationError("not_found")
+            if promo.discount_type == PromoDiscountType.bonus_days:
+                redemption = await promo_service.redeem_bonus_days(
+                    user=user,
+                    code=message.text,
+                    subscription_service=build_subscription_service(
+                        session,
+                        remnawave_client,
+                        subscription_cipher,
+                        remnawave_internal_squad_uuid,
+                        remnawave_russia_squad_uuid,
+                        remnawave_template_user_uuid,
+                    ),
+                    actor_telegram_id=message.from_user.id,
+                )
+            else:
+                raw_order_id = data.get("order_id")
+                if raw_order_id:
+                    order_id = uuid.UUID(str(raw_order_id))
+                    order = await session.scalar(
+                        select(Order).where(Order.id == order_id).with_for_update()
+                    )
+                else:
+                    order = (
+                        await OrderRepository(session).get_latest_pending_for_user(
+                            user.id,
+                            purpose=OrderPurpose.subscription_purchase,
+                            for_update=True,
+                        )
+                    )
+                if order is not None and order.user_id != user.id:
+                    raise PromoValidationError("foreign_order")
+                if order is not None:
+                    application = await promo_service.apply_to_order(
+                        order,
+                        user_id=user.id,
+                        code=message.text,
+                        actor_telegram_id=message.from_user.id,
+                    )
     except (ValueError, PromoValidationError) as exc:
         reason = (
             exc.reason if isinstance(exc, PromoValidationError) else "foreign_order"
@@ -293,4 +406,26 @@ async def apply_promo(
         )
         return
     await state.clear()
+    if redemption is not None:
+        await _send_bonus_days_success(message, redemption)
+        return
+    if order is None or application is None:
+        promo_code = validate_code_format(message.text)
+        await remember_pending_promo_code(state, promo_code)
+        await message.answer(
+            "🎟 <b>Промокод сохранён</b>\n\n"
+            "Он применится автоматически после выбора тарифа.",
+            reply_markup=InlineKeyboardMarkup(
+                inline_keyboard=[
+                    [
+                        InlineKeyboardButton(
+                            text="💳 Выбрать тариф",
+                            callback_data=TARIFFS_CALLBACK,
+                        )
+                    ]
+                ]
+            ),
+            parse_mode="HTML",
+        )
+        return
     await _send_promo_success(message, order, application)

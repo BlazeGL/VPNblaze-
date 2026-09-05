@@ -1,3 +1,4 @@
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -26,7 +27,15 @@ from app.bot.services.command_menu import (
     PUBLIC_COMMANDS,
     register_command_menu,
 )
-from app.database.models import BalanceTransactionType, OrderPurpose, Tariff
+from app.database.models import (
+    BalanceTransactionType,
+    OrderPurpose,
+    PromoDiscountType,
+    Subscription,
+    SubscriptionSource,
+    SubscriptionStatus,
+    Tariff,
+)
 
 
 def private_message(user_id: int = 123) -> MagicMock:
@@ -180,6 +189,14 @@ async def test_plain_promo_is_saved_until_user_selects_tariff(
         "app.bot.handlers.promos.OrderRepository",
         MagicMock(return_value=order_repository),
     )
+    promo_service = MagicMock()
+    promo_service.get_by_code = AsyncMock(
+        return_value=SimpleNamespace(discount_type=PromoDiscountType.percent)
+    )
+    monkeypatch.setattr(
+        "app.bot.handlers.promos.PromoService",
+        MagicMock(return_value=promo_service),
+    )
 
     await apply_promo_from_any_screen(
         message,
@@ -198,6 +215,64 @@ async def test_plain_promo_is_saved_until_user_selects_tariff(
     assert "Промокод сохранён" in answer.args[0]
     button = answer.kwargs["reply_markup"].inline_keyboard[0][0]
     assert button.callback_data == "tariffs"
+
+
+@pytest.mark.asyncio
+async def test_bonus_days_promo_activates_without_payment_screen(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    message = private_message()
+    state = MagicMock()
+    state.get_data = AsyncMock(return_value={})
+    state.set_data = AsyncMock()
+    user = SimpleNamespace(id=7)
+    user_repository = MagicMock()
+    user_repository.get_by_telegram_id = AsyncMock(return_value=user)
+    promo_service = MagicMock()
+    promo_service.get_by_code = AsyncMock(
+        return_value=SimpleNamespace(discount_type=PromoDiscountType.bonus_days)
+    )
+    now = datetime.now(UTC)
+    subscription = Subscription(
+        user_id=user.id,
+        source_type=SubscriptionSource.paid,
+        status=SubscriptionStatus.active,
+        started_at=now,
+        expires_at=now + timedelta(days=37),
+        device_limit=1,
+    )
+    promo_service.redeem_bonus_days = AsyncMock(
+        return_value=SimpleNamespace(bonus_days=7, subscription=subscription)
+    )
+    monkeypatch.setattr(
+        "app.bot.handlers.promos.UserRepository",
+        MagicMock(return_value=user_repository),
+    )
+    monkeypatch.setattr(
+        "app.bot.handlers.promos.PromoService",
+        MagicMock(return_value=promo_service),
+    )
+    monkeypatch.setattr(
+        "app.bot.handlers.promos.build_subscription_service",
+        MagicMock(return_value=MagicMock()),
+    )
+
+    await apply_promo_from_any_screen(
+        message,
+        "DAYS7",
+        state,
+        async_session_factory(MagicMock()),
+    )
+
+    answer = message.answer.await_args
+    assert "Добавлено: <b>7 дней</b>" in answer.args[0]
+    assert "Оплата не требуется" in answer.args[0]
+    callbacks = {
+        button.callback_data
+        for row in answer.kwargs["reply_markup"].inline_keyboard
+        for button in row
+    }
+    assert callbacks == {"my_subscription", "main_menu"}
 
 
 def test_balance_operation_is_rendered_for_user() -> None:

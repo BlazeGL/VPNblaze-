@@ -525,6 +525,25 @@ async def test_promo_value_rejects_out_of_range_values(raw: str) -> None:
 
 
 @pytest.mark.asyncio
+async def test_bonus_days_promo_skips_tariff_and_order_amount_steps() -> None:
+    state = MagicMock()
+    state.get_data = AsyncMock(return_value={"discount_type": "bonus_days"})
+    state.update_data = AsyncMock()
+    state.set_state = AsyncMock()
+    message = message_with("7")
+
+    await promo_value_step(message, state)
+
+    state.set_state.assert_awaited_once()
+    assert state.set_state.await_args.args[0].state == "PromoForm:max_uses"
+    assert any(
+        call.kwargs == {"tariff_ids": None, "minimum_order_amount": None}
+        for call in state.update_data.await_args_list
+    )
+    assert "Максимальное количество" in message.answer.await_args.args[0]
+
+
+@pytest.mark.asyncio
 async def test_stale_promo_cancel_does_not_clear_another_form() -> None:
     state = MagicMock()
     state.get_state = AsyncMock(return_value="TariffPriceForm:price")

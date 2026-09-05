@@ -1,4 +1,6 @@
 import logging
+import uuid
+from collections.abc import Awaitable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Protocol
@@ -145,10 +147,64 @@ class SubscriptionService:
         await self.session.flush()
         return await self._provision(subscription, user)
 
+    async def extend_with_bonus_days(
+        self,
+        user: User,
+        bonus_days: int,
+        *,
+        redemption_id: uuid.UUID,
+        locked_subscription: Subscription | None = None,
+        now: datetime | None = None,
+    ) -> Subscription:
+        if bonus_days <= 0:
+            raise ValueError("bonus_days_positive")
+        moment = now or datetime.now(UTC)
+        subscription = locked_subscription or await self.get_for_update(user.id)
+        if subscription is None:
+            raise LookupError("subscription_required")
+
+        was_active = (
+            subscription.status == SubscriptionStatus.active
+            and subscription.expires_at > moment
+        )
+        base = subscription.expires_at if subscription.expires_at > moment else moment
+        if subscription.expires_at <= moment:
+            subscription.started_at = moment
+        subscription.expires_at = base + timedelta(days=bonus_days)
+        subscription.status = SubscriptionStatus.pending
+        subscription.expiry_notice_3d_at = None
+        subscription.expiry_notice_1d_at = None
+        subscription.expired_notice_at = None
+        subscription.next_retry_at = None
+        if not was_active:
+            subscription.activation_notified_at = None
+        await self.session.flush()
+
+        provision_bonus = getattr(self.adapter, "provision_bonus", None)
+        if provision_bonus is None:
+            return await self._provision(subscription, user)
+        return await self._provision_with(
+            subscription,
+            user,
+            provision_bonus(subscription, user, redemption_id=redemption_id),
+        )
+
     async def _provision(self, subscription: Subscription, user: User) -> Subscription:
+        return await self._provision_with(
+            subscription,
+            user,
+            self.adapter.provision(subscription, user),
+        )
+
+    async def _provision_with(
+        self,
+        subscription: Subscription,
+        user: User,
+        provision_result: Awaitable[ProvisioningResult],
+    ) -> Subscription:
         previous_status = subscription.status
         try:
-            result = await self.adapter.provision(subscription, user)
+            result = await provision_result
         except Exception as exc:
             subscription.activation_attempts += 1
             subscription.status = SubscriptionStatus.activation_failed

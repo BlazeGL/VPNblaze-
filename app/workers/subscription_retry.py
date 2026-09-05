@@ -14,6 +14,8 @@ from app.database.models import (
     OrderStatus,
     Payment,
     PaymentStatus,
+    ProvisioningOperation,
+    ProvisioningOperationStatus,
     ProvisioningStatus,
     Subscription,
     SubscriptionStatus,
@@ -315,6 +317,16 @@ async def _retry_subscriptions(
             user = await session.get(User, item.user_id)
             if not user:
                 continue
+            failed_operation = await session.scalar(
+                select(ProvisioningOperation)
+                .where(
+                    ProvisioningOperation.subscription_id == item.id,
+                    ProvisioningOperation.status
+                    == ProvisioningOperationStatus.failed,
+                )
+                .order_by(ProvisioningOperation.updated_at.desc())
+                .limit(1)
+            )
             result = await RemnawaveProvisioningService(
                 session,
                 client,
@@ -322,7 +334,21 @@ async def _retry_subscriptions(
                 squad,
                 russia_squad,
                 template_user_uuid,
-            ).provision(item, user, source=item.source_type, order_id=item.order_id)
+            ).provision(
+                item,
+                user,
+                source=(
+                    failed_operation.source
+                    if failed_operation
+                    else item.source_type
+                ),
+                order_id=(
+                    failed_operation.order_id if failed_operation else item.order_id
+                ),
+                idempotency_key=(
+                    failed_operation.idempotency_key if failed_operation else None
+                ),
+            )
             attempts = item.activation_attempts
             if result.status == SubscriptionStatus.active:
                 activated = True

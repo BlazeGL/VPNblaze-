@@ -37,6 +37,7 @@ from app.services.promos import (
 )
 from app.services.subscriptions import (
     DeferredSubscriptionAdapter,
+    ProvisioningResult,
     SubscriptionService,
 )
 from app.services.trials import TrialService
@@ -332,6 +333,59 @@ async def test_promo_snapshot_is_saved_on_order() -> None:
     assert order.final_amount == Decimal("399.20")
 
 
+@pytest.mark.asyncio
+async def test_bonus_days_promo_is_redeemed_without_an_order() -> None:
+    session = session_mock()
+    promo = make_promo(PromoDiscountType.bonus_days)
+    service = PromoService(session)
+    service.get_by_code = AsyncMock(return_value=promo)  # type: ignore[method-assign]
+    session.scalar.return_value = 0
+    now = datetime(2026, 9, 5, tzinfo=UTC)
+    subscription = Subscription(
+        user_id=1,
+        source_type=SubscriptionSource.paid,
+        status=SubscriptionStatus.active,
+        started_at=now - timedelta(days=10),
+        expires_at=now + timedelta(days=20),
+        device_limit=3,
+    )
+    subscriptions = MagicMock()
+    subscriptions.get_for_update = AsyncMock(return_value=subscription)
+    subscriptions.extend_with_bonus_days = AsyncMock(return_value=subscription)
+
+    result = await service.redeem_bonus_days(
+        user=make_user(),
+        code=promo.code,
+        subscription_service=subscriptions,
+        now=now,
+    )
+
+    assert result.bonus_days == 7
+    assert promo.uses_count == 1
+    usage = next(
+        call.args[0]
+        for call in session.add.call_args_list
+        if call.args and call.args[0].__class__.__name__ == "PromoCodeUsage"
+    )
+    assert usage.order_id is None
+    assert usage.bonus_days == 7
+    subscriptions.extend_with_bonus_days.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_bonus_days_promo_cannot_be_attached_to_order() -> None:
+    session = session_mock()
+    promo = make_promo(PromoDiscountType.bonus_days)
+    order = make_payment_and_order()[1]
+    service = PromoService(session)
+    service.get_by_code = AsyncMock(return_value=promo)  # type: ignore[method-assign]
+
+    with pytest.raises(PromoValidationError, match="bonus_days_direct_only"):
+        await service.apply_to_order(order, user_id=order.user_id, code=promo.code)
+
+    assert order.promo_code_id is None
+
+
 def make_payment_and_order() -> tuple[Payment, Order]:
     order_id = uuid.uuid4()
     order = Order(
@@ -473,6 +527,46 @@ async def test_bonus_days_are_added_to_subscription() -> None:
     ).extend_from_paid_order(make_user(), order, now=now)
 
     assert subscription.expires_at == now + timedelta(days=37)
+
+
+@pytest.mark.asyncio
+async def test_bonus_redemption_extends_existing_subscription_directly() -> None:
+    session = session_mock()
+    now = datetime(2026, 9, 5, tzinfo=UTC)
+    subscription = Subscription(
+        user_id=1,
+        source_type=SubscriptionSource.paid,
+        status=SubscriptionStatus.active,
+        started_at=now - timedelta(days=10),
+        expires_at=now + timedelta(days=20),
+        order_id=uuid.uuid4(),
+        device_limit=3,
+    )
+    session.scalar.return_value = subscription
+    adapter = MagicMock()
+    adapter.provision_bonus = AsyncMock(
+        return_value=ProvisioningResult(status=SubscriptionStatus.active)
+    )
+    redemption_id = uuid.uuid4()
+    user = make_user()
+
+    updated = await SubscriptionService(
+        session,
+        adapter,
+    ).extend_with_bonus_days(
+        user,
+        7,
+        redemption_id=redemption_id,
+        now=now,
+    )
+
+    assert updated.expires_at == now + timedelta(days=27)
+    assert updated.order_id == subscription.order_id
+    adapter.provision_bonus.assert_awaited_once_with(
+        subscription,
+        user,
+        redemption_id=redemption_id,
+    )
 
 
 @pytest.mark.asyncio
