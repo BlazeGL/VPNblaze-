@@ -43,6 +43,10 @@ PLATFORM_CALLBACKS = {
     "app_ios_main": ("ios", "main"),
     "app_windows_main": ("windows", "main"),
     "app_linux_main": ("linux", "main"),
+    "app_android_more": ("android", "more"),
+    "app_ios_more": ("ios", "more"),
+    "app_windows_more": ("windows", "more"),
+    "app_linux_more": ("linux", "more"),
     "app_android_subscription": ("android", "subscription"),
     "app_ios_subscription": ("ios", "subscription"),
     "app_windows_subscription": ("windows", "subscription"),
@@ -179,11 +183,14 @@ async def show_key(
     await render_key(callback, session_factory, subscription_cipher)
 
 
-@router.callback_query(F.data.in_({"apps", "apps_from_main", "apps_from_subscription"}))
+@router.callback_query(
+    F.data.in_({"apps", "apps_from_main", "apps_from_more", "apps_from_subscription"})
+)
 async def show_devices(callback: CallbackQuery) -> None:
     source = {
         "apps": "key",
         "apps_from_main": "main",
+        "apps_from_more": "more",
         "apps_from_subscription": "subscription",
     }.get(callback.data or "")
     if source is None:
@@ -201,6 +208,7 @@ async def show_devices(callback: CallbackQuery) -> None:
         {
             "back_to_devices",
             "back_to_devices_main",
+            "back_to_devices_more",
             "back_to_devices_subscription",
         }
     )
@@ -209,6 +217,7 @@ async def back_to_devices(callback: CallbackQuery) -> None:
     source = {
         "back_to_devices": "key",
         "back_to_devices_main": "main",
+        "back_to_devices_more": "more",
         "back_to_devices_subscription": "subscription",
     }.get(callback.data or "")
     if source is None:
@@ -295,6 +304,4 @@ async def show_short_link(
 async def show_instruction(callback: CallbackQuery) -> None:
     await callback.answer()
     if callback.message:
-        await edit_or_send(
-            callback.message, INSTRUCTION_TEXT, instruction_keyboard()
-        )
+        await edit_or_send(callback.message, INSTRUCTION_TEXT, instruction_keyboard())

@@ -12,6 +12,7 @@ from app.bot.handlers.user_commands import (
     PRIVATE_COMMANDS,
     _transaction_line,
     balance_keyboard,
+    help_keyboard,
     key_command,
     profile_command,
 )
@@ -37,9 +38,7 @@ async def test_key_command_does_not_open_personal_data_in_group(
 ) -> None:
     message = private_message()
     message.chat.type = ChatType.GROUP
-    message.bot.get_me = AsyncMock(
-        return_value=SimpleNamespace(username="BlazeVPNBot")
-    )
+    message.bot.get_me = AsyncMock(return_value=SimpleNamespace(username="BlazeVPNBot"))
     render_key = AsyncMock()
     monkeypatch.setattr(user_commands, "render_key", render_key)
 
@@ -86,9 +85,7 @@ async def test_promo_entry_clears_conflicting_state_and_starts_existing_fsm(
     order = SimpleNamespace(id="5f742b69-702f-48d5-8184-ddcf01fb7e28")
 
     user_repository = MagicMock()
-    user_repository.get_by_telegram_id = AsyncMock(
-        return_value=SimpleNamespace(id=7)
-    )
+    user_repository.get_by_telegram_id = AsyncMock(return_value=SimpleNamespace(id=7))
     order_repository = MagicMock()
     order_repository.get_latest_pending_for_user = AsyncMock(return_value=order)
     monkeypatch.setattr(
@@ -160,12 +157,12 @@ async def test_command_menu_has_public_and_admin_scopes() -> None:
     assert isinstance(calls[0].kwargs["scope"], BotCommandScopeAllPrivateChats)
     assert [call.kwargs["scope"].chat_id for call in calls[1:]] == [101, 202]
     assert all(
-        isinstance(call.kwargs["scope"], BotCommandScopeChat)
-        for call in calls[1:]
+        isinstance(call.kwargs["scope"], BotCommandScopeChat) for call in calls[1:]
     )
     public_names = {command.command for command in PUBLIC_COMMANDS}
     admin_names = {command.command for command in ADMIN_COMMANDS}
     assert admin_names.isdisjoint(public_names)
+    assert public_names == {"start", "key", "profile", "plans", "support"}
     assert admin_names == {
         "admin",
         "new_promo",
@@ -173,6 +170,20 @@ async def test_command_menu_has_public_and_admin_scopes() -> None:
         "sync_remnawave",
         "grant_vpn",
     }
+
+
+def test_help_center_keeps_guides_and_operator_entry() -> None:
+    buttons = [button for row in help_keyboard().inline_keyboard for button in row]
+
+    assert [button.callback_data for button in buttons] == [
+        "apps_from_main",
+        "key_refresh",
+        "key_instruction",
+        "tariffs",
+        "support_from_main",
+        "main_menu",
+    ]
+    assert buttons[-2].text == "✉️ Написать оператору"
 
 
 def test_all_command_routers_are_registered() -> None:

@@ -1,4 +1,5 @@
 import struct
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -8,13 +9,19 @@ import pytest
 from aiogram.enums import ParseMode
 from aiogram.types import FSInputFile
 
-from app.bot.handlers.start import START_BANNER_PATH, send_welcome, show_channel
+from app.bot.handlers.start import (
+    START_BANNER_PATH,
+    main_menu_primary_action,
+    send_welcome,
+    show_channel,
+)
 from app.bot.keyboards.start import (
     ACTIVATE_TRIAL_CALLBACK,
     BUY_SUBSCRIPTION_CALLBACK,
-    CHANNEL_CALLBACK,
     CHANNEL_URL,
+    HELP_CENTER_CALLBACK,
     MAIN_MENU_CALLBACK,
+    MORE_CALLBACK,
     MY_SUBSCRIPTION_CALLBACK,
     START_CONNECTION_CALLBACK,
     TARIFFS_CALLBACK,
@@ -22,9 +29,15 @@ from app.bot.keyboards.start import (
     build_connection_menu,
     build_main_menu,
     channel_menu,
+    more_menu,
 )
 from app.bot.rendering import edit_text_or_caption
 from app.bot.texts.start import CHANNEL_TEXT, START_TEXT
+from app.database.models import (
+    ProvisioningStatus,
+    SubscriptionSource,
+    SubscriptionStatus,
+)
 
 
 def flatten(markup: object) -> list[object]:
@@ -44,21 +57,60 @@ def test_start_keyboard_has_requested_layout_and_callbacks() -> None:
     markup = build_main_menu()
 
     assert [[button.text for button in row] for row in markup.inline_keyboard] == [
-        ["🚀 Начать подключение"],
-        ["💳 Купить подписку", "📦 Тарифы"],
-        ["❓ Помощь", "👤 Личный кабинет"],
-        ["📢 Наш канал"],
-        ["📄 Пользовательское соглашение"],
+        ["🚀 Подключиться"],
+        ["💳 Тарифы", "🆘 Поддержка"],
+        ["⋯ Ещё"],
     ]
     buttons = flatten(markup)
     assert buttons[0].callback_data == START_CONNECTION_CALLBACK  # type: ignore[attr-defined]
-    assert buttons[1].callback_data == BUY_SUBSCRIPTION_CALLBACK  # type: ignore[attr-defined]
-    assert buttons[2].callback_data == TARIFFS_CALLBACK  # type: ignore[attr-defined]
-    assert buttons[3].callback_data == "support_from_main"  # type: ignore[attr-defined]
-    assert buttons[3].url is None  # type: ignore[attr-defined]
-    assert buttons[4].callback_data == MY_SUBSCRIPTION_CALLBACK  # type: ignore[attr-defined]
-    assert buttons[5].callback_data == CHANNEL_CALLBACK  # type: ignore[attr-defined]
-    assert buttons[6].callback_data == USER_AGREEMENT_CALLBACK  # type: ignore[attr-defined]
+    assert buttons[1].callback_data == TARIFFS_CALLBACK  # type: ignore[attr-defined]
+    assert buttons[2].callback_data == HELP_CENTER_CALLBACK  # type: ignore[attr-defined]
+    assert buttons[2].url is None  # type: ignore[attr-defined]
+    assert buttons[3].callback_data == MORE_CALLBACK  # type: ignore[attr-defined]
+
+
+@pytest.mark.parametrize(
+    ("action", "expected_text", "expected_callback"),
+    [
+        ("connect", "🚀 Подключиться", START_CONNECTION_CALLBACK),
+        ("trial", "🎁 Попробовать бесплатно", ACTIVATE_TRIAL_CALLBACK),
+        ("subscription", "👤 Моя подписка", MY_SUBSCRIPTION_CALLBACK),
+        ("renew", "🔄 Продлить подписку", TARIFFS_CALLBACK),
+    ],
+)
+def test_main_menu_primary_action_is_adaptive(
+    action: str,
+    expected_text: str,
+    expected_callback: str,
+) -> None:
+    button = build_main_menu(primary_action=action).inline_keyboard[0][0]
+
+    assert button.text == expected_text
+    assert button.callback_data == expected_callback
+
+
+def test_main_menu_state_prefers_trial_subscription_and_renewal() -> None:
+    user = SimpleNamespace(
+        trial_used=False,
+        trial_disabled=False,
+        is_blocked=False,
+    )
+    active = SimpleNamespace(
+        expires_at=datetime.now(UTC) + timedelta(days=10),
+        status=SubscriptionStatus.active,
+        provisioning_status=ProvisioningStatus.active,
+        source_type=SubscriptionSource.paid,
+    )
+    expired = SimpleNamespace(
+        expires_at=datetime.now(UTC) - timedelta(days=1),
+        status=SubscriptionStatus.expired,
+        provisioning_status=ProvisioningStatus.disabled,
+        source_type=SubscriptionSource.paid,
+    )
+
+    assert main_menu_primary_action(user, None) == "trial"  # type: ignore[arg-type]
+    assert main_menu_primary_action(user, active) == "subscription"  # type: ignore[arg-type]
+    assert main_menu_primary_action(user, expired) == "renew"  # type: ignore[arg-type]
 
 
 def test_channel_url_is_hidden_behind_the_requested_button() -> None:
@@ -70,7 +122,7 @@ def test_channel_url_is_hidden_behind_the_requested_button() -> None:
     assert channel_button.url == CHANNEL_URL
     assert channel_button.callback_data is None
     assert CHANNEL_URL not in CHANNEL_TEXT
-    assert back_button.callback_data == MAIN_MENU_CALLBACK
+    assert back_button.callback_data == MORE_CALLBACK
 
 
 @pytest.mark.asyncio
@@ -94,9 +146,11 @@ async def test_channel_callback_renders_message_without_visible_url(
 
 
 def test_valid_agreement_url_creates_url_only_button() -> None:
-    button = flatten(
-        build_main_menu("https://legal.example.org/blazevpn")
-    )[-1]
+    button = next(
+        button
+        for button in flatten(more_menu("https://legal.example.org/blazevpn"))
+        if button.text == "📄 Пользовательское соглашение"  # type: ignore[attr-defined]
+    )
 
     assert button.url == "https://legal.example.org/blazevpn"  # type: ignore[attr-defined]
     assert button.callback_data is None  # type: ignore[attr-defined]
@@ -109,10 +163,25 @@ def test_valid_agreement_url_creates_url_only_button() -> None:
 def test_missing_or_invalid_agreement_url_uses_internal_page(
     url: str | None,
 ) -> None:
-    button = flatten(build_main_menu(url))[-1]
+    button = next(
+        button
+        for button in flatten(more_menu(url))
+        if button.text == "📄 Пользовательское соглашение"  # type: ignore[attr-defined]
+    )
 
     assert button.url is None  # type: ignore[attr-defined]
     assert button.callback_data == USER_AGREEMENT_CALLBACK  # type: ignore[attr-defined]
+
+
+def test_more_menu_contains_only_secondary_actions() -> None:
+    markup = more_menu()
+
+    assert [[button.text for button in row] for row in markup.inline_keyboard] == [
+        ["🎁 Бонусы", "📱 Приложения"],
+        ["📢 Наш канал"],
+        ["📄 Пользовательское соглашение"],
+        ["⬅️ Назад"],
+    ]
 
 
 @pytest.mark.parametrize(

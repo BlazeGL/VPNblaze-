@@ -86,6 +86,21 @@ def test_back_navigation_from_android_and_devices_is_explicit() -> None:
     assert device_buttons[-1].callback_data == "back_to_key"  # type: ignore[attr-defined]
 
 
+def test_more_apps_return_to_more_menu() -> None:
+    device_buttons = flatten(devices_keyboard(source="more"))
+    android_buttons = flatten(
+        platform_keyboard(
+            "android",
+            APP_URLS["android"],
+            back_callback="back_to_devices_more",
+        )
+    )
+
+    assert device_buttons[0].callback_data == "app_android_more"  # type: ignore[attr-defined]
+    assert device_buttons[-1].callback_data == "more_menu"  # type: ignore[attr-defined]
+    assert android_buttons[-1].callback_data == "back_to_devices_more"  # type: ignore[attr-defined]
+
+
 def test_urls_and_subscription_values_are_not_stored_in_callback_data() -> None:
     callbacks = [
         button.callback_data
@@ -136,7 +151,7 @@ def test_support_buttons_use_internal_callbacks() -> None:
     main_support = next(
         button
         for button in flatten(build_main_menu())
-        if button.text == "❓ Помощь"  # type: ignore[attr-defined]
+        if button.text == "🆘 Поддержка"  # type: ignore[attr-defined]
     )
     key_support = flatten(activation_keyboard())[-2]
     subscription_support = next(
@@ -145,7 +160,7 @@ def test_support_buttons_use_internal_callbacks() -> None:
         if button.text == "🆘 Поддержка"  # type: ignore[attr-defined]
     )
 
-    assert main_support.callback_data == "support_from_main"  # type: ignore[attr-defined]
+    assert main_support.callback_data == "help_center"  # type: ignore[attr-defined]
     assert key_support.callback_data == "support_from_key"  # type: ignore[attr-defined]
     assert (  # type: ignore[attr-defined]
         subscription_support.callback_data == "support_from_subscription"
@@ -217,15 +232,9 @@ def test_negative_remaining_time_is_not_displayed() -> None:
 def test_remaining_time_uses_russian_plural_forms() -> None:
     now = datetime(2026, 8, 1, tzinfo=UTC)
 
-    assert format_time_left(
-        datetime(2026, 8, 2, tzinfo=UTC), now=now
-    ) == "1 день"
-    assert format_time_left(
-        datetime(2026, 8, 3, tzinfo=UTC), now=now
-    ) == "2 дня"
-    assert format_time_left(
-        datetime(2026, 8, 6, tzinfo=UTC), now=now
-    ) == "5 дней"
+    assert format_time_left(datetime(2026, 8, 2, tzinfo=UTC), now=now) == "1 день"
+    assert format_time_left(datetime(2026, 8, 3, tzinfo=UTC), now=now) == "2 дня"
+    assert format_time_left(datetime(2026, 8, 6, tzinfo=UTC), now=now) == "5 дней"
 
 
 def make_subscription(**overrides: object) -> SimpleNamespace:
@@ -285,9 +294,23 @@ def test_user_without_subscription_sees_purchase_without_repeated_trial() -> Non
         )
     ]
 
-    assert "buy_vpn" in callbacks
     assert "tariffs" in callbacks
+    assert "buy_vpn" not in callbacks
     assert "activate_trial" not in callbacks
+
+
+def test_activation_and_account_menus_avoid_repeated_actions() -> None:
+    activation_buttons = flatten(activation_keyboard())
+    account_buttons = flatten(subscription_menu())
+
+    assert activation_buttons[0].text == "📱 Подключить устройство"  # type: ignore[attr-defined]
+    assert all(
+        button.callback_data not in {"key_instruction", "key_refresh"}
+        for button in activation_buttons
+    )  # type: ignore[attr-defined]
+    assert all(
+        button.callback_data != "subscription_refresh" for button in account_buttons
+    )  # type: ignore[attr-defined]
 
 
 def test_expired_subscription_sees_renewal_and_previous_key() -> None:

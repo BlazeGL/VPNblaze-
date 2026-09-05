@@ -2,8 +2,6 @@ from urllib.parse import quote, urlsplit
 
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
-from app.bot.keyboards.subscription import SUPPORT_URL
-
 START_CONNECTION_CALLBACK = "start_connection"
 ACTIVATE_TRIAL_CALLBACK = "activate_trial"
 BUY_SUBSCRIPTION_CALLBACK = "buy_vpn"
@@ -11,6 +9,8 @@ TARIFFS_CALLBACK = "tariffs"
 MY_SUBSCRIPTION_CALLBACK = "my_subscription"
 MAIN_MENU_CALLBACK = "main_menu"
 BACK_TO_MAIN_CALLBACK = "back_to_main"
+HELP_CENTER_CALLBACK = "help_center"
+MORE_CALLBACK = "more_menu"
 USER_AGREEMENT_CALLBACK = "legal_user_agreement"
 PRIVACY_POLICY_CALLBACK = "legal_privacy_policy"
 REFUND_TERMS_CALLBACK = "legal_refund_terms"
@@ -40,62 +40,73 @@ def agreement_button(url: str | None = None) -> InlineKeyboardButton:
 
 
 def build_main_menu(
-    user_agreement_url: str | None = None,
     *,
-    show_bonuses: bool = False,
-    support_url: str = SUPPORT_URL,
+    primary_action: str = "connect",
 ) -> InlineKeyboardMarkup:
+    primary_actions = {
+        "connect": ("🚀 Подключиться", START_CONNECTION_CALLBACK),
+        "trial": ("🎁 Попробовать бесплатно", ACTIVATE_TRIAL_CALLBACK),
+        "subscription": ("👤 Моя подписка", MY_SUBSCRIPTION_CALLBACK),
+        "renew": ("🔄 Продлить подписку", TARIFFS_CALLBACK),
+    }
+    if primary_action not in primary_actions:
+        raise ValueError("Unsupported main menu primary action")
+    primary_text, primary_callback = primary_actions[primary_action]
     rows = [
-            [
-                InlineKeyboardButton(
-                    text="🚀 Начать подключение",
-                    callback_data=START_CONNECTION_CALLBACK,
-                )
-            ],
-            [
-                InlineKeyboardButton(
-                    text="💳 Купить подписку",
-                    callback_data=BUY_SUBSCRIPTION_CALLBACK,
-                ),
-                InlineKeyboardButton(
-                    text="📦 Тарифы",
-                    callback_data=TARIFFS_CALLBACK,
-                ),
-            ],
-            [
-                InlineKeyboardButton(
-                    text="❓ Помощь",
-                    callback_data="support_from_main",
-                ),
-                InlineKeyboardButton(
-                    text="👤 Личный кабинет",
-                    callback_data=MY_SUBSCRIPTION_CALLBACK,
-                ),
-            ],
-        ]
-    if show_bonuses:
-        rows.append(
+        [
+            InlineKeyboardButton(
+                text=primary_text,
+                callback_data=primary_callback,
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                text="💳 Тарифы",
+                callback_data=TARIFFS_CALLBACK,
+            ),
+            InlineKeyboardButton(
+                text="🆘 Поддержка",
+                callback_data=HELP_CENTER_CALLBACK,
+            ),
+        ],
+        [
+            InlineKeyboardButton(
+                text="⋯ Ещё",
+                callback_data=MORE_CALLBACK,
+            )
+        ],
+    ]
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def more_menu(user_agreement_url: str | None = None) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
             [
                 InlineKeyboardButton(
                     text="🎁 Бонусы",
                     callback_data=BONUSES_CALLBACK,
+                ),
+                InlineKeyboardButton(
+                    text="📱 Приложения",
+                    callback_data="apps_from_more",
+                ),
+            ],
+            [
+                InlineKeyboardButton(
+                    text="📢 Наш канал",
+                    callback_data=CHANNEL_CALLBACK,
                 )
-            ]
-        )
-    rows.append(
-        [
-            InlineKeyboardButton(
-                text="📢 Наш канал",
-                callback_data=CHANNEL_CALLBACK,
-            )
-        ]
-    )
-    rows.extend(
-        [
+            ],
             [agreement_button(user_agreement_url)],
+            [
+                InlineKeyboardButton(
+                    text="⬅️ Назад",
+                    callback_data=MAIN_MENU_CALLBACK,
+                )
+            ],
         ]
     )
-    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def channel_menu() -> InlineKeyboardMarkup:
@@ -109,8 +120,8 @@ def channel_menu() -> InlineKeyboardMarkup:
             ],
             [
                 InlineKeyboardButton(
-                    text="⬅️ Главное меню",
-                    callback_data=MAIN_MENU_CALLBACK,
+                    text="⬅️ Назад",
+                    callback_data=MORE_CALLBACK,
                 )
             ],
         ]
@@ -131,10 +142,7 @@ def bonuses_menu(referral_link: str | None = None) -> InlineKeyboardMarkup:
             [
                 InlineKeyboardButton(
                     text="📤 Поделиться",
-                    url=(
-                        "https://t.me/share/url?url="
-                        f"{quote(referral_link, safe='')}"
-                    ),
+                    url=(f"https://t.me/share/url?url={quote(referral_link, safe='')}"),
                 )
             ]
         )
@@ -146,9 +154,7 @@ def bonuses_menu(referral_link: str | None = None) -> InlineKeyboardMarkup:
             )
         ]
     )
-    return InlineKeyboardMarkup(
-        inline_keyboard=rows
-    )
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def build_connection_menu(

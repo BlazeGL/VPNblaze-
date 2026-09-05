@@ -32,14 +32,11 @@ def _safe_download_button(
 def activation_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text="📱 Скачать приложение", callback_data="apps")],
             [
                 InlineKeyboardButton(
-                    text="📖 Инструкция", callback_data="key_instruction"
-                ),
-                InlineKeyboardButton(
-                    text="🔄 Показать ключ снова", callback_data="key_refresh"
-                ),
+                    text="📱 Подключить устройство",
+                    callback_data="apps",
+                )
             ],
             [
                 InlineKeyboardButton(
@@ -62,6 +59,7 @@ def devices_keyboard(*, source: str = "key") -> InlineKeyboardMarkup:
     sources = {
         "key": ("", "back_to_key"),
         "main": ("_main", "main_menu"),
+        "more": ("_more", "more_menu"),
         "subscription": ("_subscription", "back_to_subscription"),
     }
     if source not in sources:
@@ -99,6 +97,7 @@ def platform_keyboard(
     if back_callback not in {
         "back_to_devices",
         "back_to_devices_main",
+        "back_to_devices_more",
         "back_to_devices_subscription",
     }:
         raise ValueError("Unsupported platform navigation destination")
@@ -174,20 +173,12 @@ def subscription_menu(
                     )
                 ]
             )
-        rows.extend(
+        rows.append(
             [
-                [
-                    InlineKeyboardButton(
-                        text="💳 Купить подписку",
-                        callback_data="buy_vpn",
-                    )
-                ],
-                [
-                    InlineKeyboardButton(
-                        text="📦 Посмотреть тарифы",
-                        callback_data="tariffs",
-                    )
-                ],
+                InlineKeyboardButton(
+                    text="💳 Выбрать тариф",
+                    callback_data="tariffs",
+                )
             ]
         )
     elif state == "expired":
@@ -212,7 +203,7 @@ def subscription_menu(
         rows.append(
             [
                 InlineKeyboardButton(
-                    text="💳 Купить подписку на 30 дней",
+                    text="💳 Выбрать тариф",
                     callback_data="tariffs",
                 )
             ]
@@ -231,7 +222,7 @@ def subscription_menu(
             [
                 [
                     InlineKeyboardButton(
-                        text="📱 Скачать приложение",
+                        text="📱 Подключить устройство",
                         callback_data="apps_from_subscription",
                     )
                 ],
@@ -239,12 +230,6 @@ def subscription_menu(
                     InlineKeyboardButton(
                         text="💳 Продлить подписку",
                         callback_data="tariffs",
-                    )
-                ],
-                [
-                    InlineKeyboardButton(
-                        text="🔄 Обновить информацию",
-                        callback_data="subscription_refresh",
                     )
                 ],
             ]

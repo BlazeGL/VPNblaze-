@@ -12,6 +12,7 @@ from app.bot.keyboards.start import (
     BACK_TO_MAIN_CALLBACK,
     CHANNEL_CALLBACK,
     MAIN_MENU_CALLBACK,
+    MORE_CALLBACK,
     PRIVACY_POLICY_CALLBACK,
     REFUND_TERMS_CALLBACK,
     START_CONNECTION_CALLBACK,
@@ -21,12 +22,14 @@ from app.bot.keyboards.start import (
     build_main_menu,
     channel_menu,
     legal_page_menu,
+    more_menu,
 )
-from app.bot.keyboards.subscription import SUPPORT_URL
 from app.bot.rendering import edit_text_or_caption
+from app.bot.texts.account import get_account_state
 from app.bot.texts.start import (
     CHANNEL_TEXT,
     CONNECTION_MENU_TEXT,
+    MORE_MENU_TEXT,
     PRIVACY_POLICY_TEXT,
     REFUND_TERMS_TEXT,
     START_TEXT,
@@ -37,6 +40,7 @@ from app.database.models import (
     Subscription,
     SubscriptionSource,
     TrialActivation,
+    User,
 )
 from app.database.repositories import UserRepository
 from app.services.referrals import REFERRAL_BONUS, ReferralService
@@ -50,17 +54,15 @@ START_BANNER_PATH = (
 
 async def send_welcome(
     message: Message,
-    user_agreement_url: str | None = None,
-    support_url: str = SUPPORT_URL,
+    *,
+    primary_action: str = "connect",
 ) -> None:
     if message.photo:
         await edit_text_or_caption(
             message,
             START_TEXT,
             build_main_menu(
-                user_agreement_url,
-                show_bonuses=True,
-                support_url=support_url,
+                primary_action=primary_action,
             ),
             parse_mode=ParseMode.HTML,
         )
@@ -69,11 +71,58 @@ async def send_welcome(
         photo=FSInputFile(START_BANNER_PATH),
         caption=START_TEXT,
         reply_markup=build_main_menu(
-            user_agreement_url,
-            show_bonuses=True,
-            support_url=support_url,
+            primary_action=primary_action,
         ),
         parse_mode=ParseMode.HTML,
+    )
+
+
+def main_menu_primary_action(
+    user: User | None,
+    subscription: Subscription | None,
+    *,
+    trial_activation_exists: bool = False,
+) -> str:
+    if subscription is not None:
+        if get_account_state(subscription) in {"expired", "disabled"}:
+            return "renew"
+        return "subscription"
+    if (
+        user is not None
+        and not user.trial_used
+        and not user.trial_disabled
+        and not user.is_blocked
+        and not trial_activation_exists
+    ):
+        return "trial"
+    return "connect"
+
+
+async def _main_menu_primary_action_for_user(
+    session: AsyncSession,
+    telegram_id: int,
+) -> str:
+    user = await UserRepository(session).get_by_telegram_id(telegram_id)
+    subscription = (
+        await session.scalar(
+            select(Subscription).where(Subscription.user_id == user.id)
+        )
+        if user is not None
+        else None
+    )
+    trial_activation = (
+        await session.scalar(
+            select(TrialActivation.id).where(
+                TrialActivation.telegram_id == user.telegram_id
+            )
+        )
+        if user is not None
+        else None
+    )
+    return main_menu_primary_action(
+        user,
+        subscription,
+        trial_activation_exists=trial_activation is not None,
     )
 
 
@@ -82,7 +131,6 @@ async def handle_start(
     message: Message,
     session_factory: async_sessionmaker[AsyncSession],
     admin_ids: set[int],
-    settings: Settings,
     command: CommandObject,
 ) -> None:
     telegram_user = message.from_user
@@ -99,11 +147,22 @@ async def handle_start(
         )
         user.is_admin = telegram_user.id in admin_ids
         referral = (
-            await ReferralService(session).award_registration_bonus(
-                user, command.args
-            )
+            await ReferralService(session).award_registration_bonus(user, command.args)
             if created
             else None
+        )
+        subscription = await session.scalar(
+            select(Subscription).where(Subscription.user_id == user.id)
+        )
+        trial_activation = await session.scalar(
+            select(TrialActivation.id).where(
+                TrialActivation.telegram_id == user.telegram_id
+            )
+        )
+        primary_action = main_menu_primary_action(
+            user,
+            subscription,
+            trial_activation_exists=trial_activation is not None,
         )
     logger.info("Processed /start for Telegram user %s", telegram_user.id)
     if referral and referral.awarded and referral.referrer is not None:
@@ -113,14 +172,8 @@ async def handle_start(
                 f"🎁 Вам начислен реферальный бонус {REFERRAL_BONUS:.0f} ₽.",
             )
         except Exception:
-            logger.exception(
-                "Could not notify referrer %s", referral.referrer.id
-            )
-    await send_welcome(
-        message,
-        settings.user_agreement_url,
-        settings.support_url,
-    )
+            logger.exception("Could not notify referrer %s", referral.referrer.id)
+    await send_welcome(message, primary_action=primary_action)
 
 
 @router.callback_query(F.data == START_CONNECTION_CALLBACK)
@@ -171,16 +224,33 @@ async def show_connection_menu(
         )
 
 
-@router.callback_query(
-    F.data.in_({MAIN_MENU_CALLBACK, BACK_TO_MAIN_CALLBACK})
-)
-async def show_main_menu(callback: CallbackQuery, settings: Settings) -> None:
+@router.callback_query(F.data.in_({MAIN_MENU_CALLBACK, BACK_TO_MAIN_CALLBACK}))
+async def show_main_menu(
+    callback: CallbackQuery,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
     await callback.answer()
+    async with session_factory() as session:
+        primary_action = await _main_menu_primary_action_for_user(
+            session,
+            callback.from_user.id,
+        )
     if callback.message:
         await send_welcome(
             callback.message,
-            settings.user_agreement_url,
-            settings.support_url,
+            primary_action=primary_action,
+        )
+
+
+@router.callback_query(F.data == MORE_CALLBACK)
+async def show_more_menu(callback: CallbackQuery, settings: Settings) -> None:
+    await callback.answer()
+    if callback.message:
+        await edit_text_or_caption(
+            callback.message,
+            MORE_MENU_TEXT,
+            more_menu(settings.user_agreement_url),
+            parse_mode=ParseMode.HTML,
         )
 
 

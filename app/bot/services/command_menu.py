@@ -10,15 +10,7 @@ PUBLIC_COMMANDS = [
     BotCommand(command="key", description="Получить VPN-ключ"),
     BotCommand(command="profile", description="Личный кабинет"),
     BotCommand(command="plans", description="Тарифы"),
-    BotCommand(command="buy", description="Купить подписку"),
-    BotCommand(command="balance", description="Баланс"),
-    BotCommand(command="topup", description="Пополнить баланс"),
-    BotCommand(command="promo", description="Ввести промокод"),
-    BotCommand(command="ref", description="Пригласить друга"),
-    BotCommand(command="apps", description="Скачать приложение"),
-    BotCommand(command="help", description="Помощь"),
     BotCommand(command="support", description="Поддержка"),
-    BotCommand(command="agreement", description="Пользовательское соглашение"),
 ]
 
 ADMIN_COMMANDS = [

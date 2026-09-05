@@ -200,8 +200,7 @@ async def apps_command(message: Message) -> None:
 
 
 HELP_TEXT = (
-    "❓ <b>Помощь BlazeVPN</b>\n\n"
-    "Выберите нужный раздел:"
+    "🆘 <b>Поддержка BlazeVPN</b>\n\nВыберите инструкцию или напишите оператору:"
 )
 
 
@@ -210,32 +209,32 @@ def help_keyboard() -> InlineKeyboardMarkup:
         inline_keyboard=[
             [
                 InlineKeyboardButton(
-                    text="Как получить ключ",
-                    callback_data="key_refresh",
-                )
-            ],
-            [
-                InlineKeyboardButton(
-                    text="Как установить приложение",
+                    text="📱 Подключить устройство",
                     callback_data="apps_from_main",
                 )
             ],
             [
                 InlineKeyboardButton(
-                    text="Как добавить ключ",
+                    text="🔑 Получить или показать ключ",
+                    callback_data="key_refresh",
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="📖 Общая инструкция",
                     callback_data="key_instruction",
                 )
             ],
             [
                 InlineKeyboardButton(
-                    text="VPN не подключается",
-                    callback_data="support_from_main",
+                    text="💳 Продлить подписку",
+                    callback_data="tariffs",
                 )
             ],
             [
                 InlineKeyboardButton(
-                    text="Как продлить подписку",
-                    callback_data="tariffs",
+                    text="✉️ Написать оператору",
+                    callback_data="support_from_main",
                 )
             ],
             [
@@ -245,6 +244,23 @@ def help_keyboard() -> InlineKeyboardMarkup:
                 )
             ],
         ]
+    )
+
+
+@router.callback_query(F.data == "help_center")
+async def help_center(callback: CallbackQuery) -> None:
+    if callback.message is None or callback.message.chat.type != ChatType.PRIVATE:
+        await callback.answer(
+            "Откройте бота в личных сообщениях.",
+            show_alert=True,
+        )
+        return
+    await callback.answer()
+    await edit_text_or_caption(
+        callback.message,
+        HELP_TEXT,
+        help_keyboard(),
+        parse_mode=ParseMode.HTML,
     )
 
 
@@ -319,9 +335,7 @@ def _transaction_line(transaction: BalanceTransaction) -> str:
 def balance_keyboard(tariff: Tariff | None = None) -> InlineKeyboardMarkup:
     purchase_label = "💳 Купить подписку"
     if tariff is not None:
-        purchase_label = (
-            f"{purchase_label} за {money(tariff.price, tariff.currency)}"
-        )
+        purchase_label = f"{purchase_label} за {money(tariff.price, tariff.currency)}"
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
@@ -393,11 +407,7 @@ async def show_balance(
     )
     tariff_summary = (
         (
-            (
-                "Тарифы начинаются от:\n"
-                if len(tariffs) > 1
-                else "Стоимость подписки:\n"
-            )
+            ("Тарифы начинаются от:\n" if len(tariffs) > 1 else "Стоимость подписки:\n")
             + f"<b>{money(tariff.price, tariff.currency)}"
             + (
                 "</b>\n\n"
@@ -406,11 +416,7 @@ async def show_balance(
             )
         )
         if tariff is not None
-        else (
-            "Стоимость зависит от выбранного тарифа.\n\n"
-            if tariffs
-            else ""
-        )
+        else ("Стоимость зависит от выбранного тарифа.\n\n" if tariffs else "")
     )
     text = (
         "💰 <b>Ваш баланс</b>\n\n"
@@ -443,6 +449,5 @@ async def balance_command(
 @unknown_router.message(StateFilter(None), F.text.startswith("/"))
 async def unknown_command(message: Message) -> None:
     await message.answer(
-        "Не удалось распознать команду.\n\n"
-        "Используйте /help или откройте главное меню."
+        "Не удалось распознать команду.\n\nИспользуйте /help или откройте главное меню."
     )
