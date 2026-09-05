@@ -190,64 +190,48 @@ def subscription_menu(
                 )
             ]
         )
-        if has_key:
-            rows.append(
-                [
-                    InlineKeyboardButton(
-                        text="🔑 Показать прежний ключ",
-                        callback_data="subscription_link",
-                    )
-                ]
-            )
     elif state == "disabled":
         rows.append(
             [
                 InlineKeyboardButton(
-                    text="💳 Выбрать тариф",
+                    text="💳 Возобновить подписку",
                     callback_data="tariffs",
                 )
             ]
         )
-    else:
-        if has_key:
-            rows.append(
-                [
-                    InlineKeyboardButton(
-                        text="🔑 Показать мой ключ",
-                        callback_data="subscription_link",
-                    )
-                ]
-            )
-        rows.extend(
-            [
-                [
-                    InlineKeyboardButton(
-                        text="📱 Подключить устройство",
-                        callback_data="apps_from_subscription",
-                    )
-                ],
-                [
-                    InlineKeyboardButton(
-                        text="💳 Продлить подписку",
-                        callback_data="tariffs",
-                    )
-                ],
-            ]
-        )
-    rows.extend(
-        [
+    elif state == "pending":
+        pass
+    elif state == "failed":
+        rows.append(
             [
                 InlineKeyboardButton(
-                    text="🆘 Поддержка",
+                    text="🆘 Написать в поддержку",
                     callback_data="support_from_subscription",
                 )
-            ],
-            [
+            ]
+        )
+    else:
+        actions: list[InlineKeyboardButton] = []
+        if has_key:
+            actions.append(
                 InlineKeyboardButton(
-                    text="⬅️ Назад",
-                    callback_data=back_callback,
+                    text="🔑 Мой ключ",
+                    callback_data="subscription_link",
                 )
-            ],
+            )
+        actions.append(
+            InlineKeyboardButton(
+                text="💳 Продлить",
+                callback_data="tariffs",
+            )
+        )
+        rows.append(actions)
+    rows.append(
+        [
+            InlineKeyboardButton(
+                text="⬅️ Назад",
+                callback_data=back_callback,
+            )
         ]
     )
     return InlineKeyboardMarkup(inline_keyboard=rows)

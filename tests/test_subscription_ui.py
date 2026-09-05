@@ -19,6 +19,7 @@ from app.bot.keyboards.subscription import (
 )
 from app.bot.texts.account import (
     account_text,
+    empty_account_text,
     format_time_left,
     format_traffic,
     get_subscription_status_text,
@@ -154,20 +155,20 @@ def test_support_buttons_use_internal_callbacks() -> None:
         if button.text == "🆘 Поддержка"  # type: ignore[attr-defined]
     )
     key_support = flatten(activation_keyboard())[-2]
-    subscription_support = next(
+    failed_subscription_support = next(
         button
-        for button in flatten(subscription_menu())
-        if button.text == "🆘 Поддержка"  # type: ignore[attr-defined]
+        for button in flatten(subscription_menu(state="failed"))
+        if button.text == "🆘 Написать в поддержку"  # type: ignore[attr-defined]
     )
 
     assert main_support.callback_data == "help_center"  # type: ignore[attr-defined]
     assert key_support.callback_data == "support_from_key"  # type: ignore[attr-defined]
     assert (  # type: ignore[attr-defined]
-        subscription_support.callback_data == "support_from_subscription"
+        failed_subscription_support.callback_data == "support_from_subscription"
     )
     assert main_support.url is None  # type: ignore[attr-defined]
     assert key_support.url is None  # type: ignore[attr-defined]
-    assert subscription_support.url is None  # type: ignore[attr-defined]
+    assert failed_subscription_support.url is None  # type: ignore[attr-defined]
 
 
 @pytest.mark.asyncio
@@ -277,9 +278,20 @@ def test_account_hides_technical_fields_and_keeps_local_data_on_sync_error() -> 
     assert state == "active"
     assert "На 3 месяца" in text
     assert "последняя сохранённая информация" in text
+    assert "Моя подписка" in text
+    assert "📅 До" in text
+    assert "· осталось" in text
+    assert "💰 Баланс" not in text
+    assert "Приглашено друзей" not in text
+    assert "━━━━━━━━" not in text
     assert "UUID" not in text
     assert "provisioning" not in text
     assert "Remnawave" not in text
+
+
+def test_empty_account_text_mentions_trial_only_when_available() -> None:
+    assert "30 дней" in empty_account_text(trial_available=True)
+    assert "30 дней" not in empty_account_text(trial_available=False)
 
 
 def test_user_without_subscription_sees_purchase_without_repeated_trial() -> None:
@@ -311,14 +323,35 @@ def test_activation_and_account_menus_avoid_repeated_actions() -> None:
     assert all(
         button.callback_data != "subscription_refresh" for button in account_buttons
     )  # type: ignore[attr-defined]
+    assert [button.text for button in account_buttons] == [  # type: ignore[attr-defined]
+        "🔑 Мой ключ",
+        "💳 Продлить",
+        "⬅️ Назад",
+    ]
+    assert len(subscription_menu().inline_keyboard) == 2
 
 
-def test_expired_subscription_sees_renewal_and_previous_key() -> None:
+def test_expired_subscription_only_sees_renewal() -> None:
     buttons = flatten(subscription_menu(state="expired", has_key=True))
 
-    assert [button.text for button in buttons[:2]] == [  # type: ignore[attr-defined]
+    assert [button.text for button in buttons] == [  # type: ignore[attr-defined]
         "💳 Возобновить подписку",
-        "🔑 Показать прежний ключ",
+        "⬅️ Назад",
+    ]
+
+
+def test_pending_subscription_only_has_back_navigation() -> None:
+    buttons = flatten(subscription_menu(state="pending", has_key=False))
+
+    assert [button.callback_data for button in buttons] == ["main_menu"]  # type: ignore[attr-defined]
+
+
+def test_failed_subscription_offers_support_instead_of_payment() -> None:
+    buttons = flatten(subscription_menu(state="failed", has_key=True))
+
+    assert [button.callback_data for button in buttons] == [  # type: ignore[attr-defined]
+        "support_from_subscription",
+        "main_menu",
     ]
 
 

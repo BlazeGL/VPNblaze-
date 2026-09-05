@@ -7,7 +7,6 @@ from app.database.models import (
     Subscription,
     SubscriptionSource,
     SubscriptionStatus,
-    User,
 )
 from app.services.traffic import TrafficFormatter
 
@@ -139,8 +138,8 @@ def get_account_state(
 
 def _status_heading(state: str) -> str:
     return {
-        "active": "🟢 <b>VPN работает</b>",
-        "trial": "🎁 <b>Пробный период активен</b>",
+        "active": "🟢 <b>Активна</b>",
+        "trial": "🎁 <b>Пробный период</b>",
         "pending": "🟡 <b>Доступ готовится</b>",
         "expired": "🔴 <b>Подписка закончилась</b>",
         "disabled": "⚫ <b>Подписка отключена</b>",
@@ -148,52 +147,10 @@ def _status_heading(state: str) -> str:
     }[state]
 
 
-def _helpful_message(
-    state: str,
-    *,
-    time_left: str,
-    sync_unavailable: bool,
-) -> str:
-    if sync_unavailable:
-        return (
-            "⚠️ Сейчас не удалось получить свежие данные с сервера. Ниже показана "
-            "последняя сохранённая информация."
-        )
-    if state == "trial":
-        return "🎁 Сейчас у вас бесплатный пробный период."
-    if state == "expired":
-        return (
-            "🔴 Срок подписки закончился. После продления ваш прежний ключ снова "
-            "заработает."
-        )
-    if state == "pending":
-        return (
-            "⏳ Мы готовим ваш доступ. Обычно это занимает меньше минуты."
-        )
-    if state == "failed":
-        return (
-            "⚠️ Не удалось обновить данные. Ваш платёж сохранён. Обратитесь в "
-            "поддержку или попробуйте обновить информацию позже."
-        )
-    if state == "disabled":
-        return (
-            "⚫ Оплаченный срок закончился. Купите подписку, чтобы "
-            "возобновить доступ."
-        )
-    if time_left in {"меньше одного дня", "1 день", "2 дня", "3 дня"}:
-        return (
-            "⚠️ Подписка скоро закончится. Продлите её, чтобы VPN не отключился."
-        )
-    return "✅ Всё готово. Можно пользоваться VPN."
-
-
 def account_text(
     subscription: Subscription,
     tariff_name: str | None,
     *,
-    tariff_price: object | None = None,
-    tariff_currency: str = "RUB",
-    user: User | None = None,
     now: datetime | None = None,
     sync_unavailable: bool = False,
 ) -> tuple[str, str]:
@@ -222,73 +179,45 @@ def account_text(
         f"{expiration_utc.year}"
     )
     if tariff_name:
-        display_tariff = (
-            (
-                f"{tariff_name} — {_number(float(tariff_price))} "
-                f"{'₽' if tariff_currency == 'RUB' else tariff_currency}"
-            )
-            if (
-                subscription.source_type == SubscriptionSource.paid
-                and tariff_price is not None
-            )
-            else tariff_name
-        )
+        display_tariff = tariff_name
     elif subscription.source_type == SubscriptionSource.paid:
         display_tariff = "Оплаченный тариф"
     elif subscription.source_type == SubscriptionSource.trial:
         display_tariff = "Пробный период"
     else:
         display_tariff = "Индивидуальный"
-    helpful_message = _helpful_message(
-        state,
-        time_left=time_left,
-        sync_unavailable=sync_unavailable,
-    )
-    financial_summary = ""
-    if user is not None:
-        financial_summary = (
-            "💰 Баланс:\n"
-            f"<b>{_number(float(user.balance))} ₽</b>\n\n"
-            "👥 Приглашено друзей:\n"
-            f"<b>{user.total_referrals}</b>\n\n"
-            "🎁 Заработано:\n"
-            f"<b>{_number(float(user.total_referral_income))} ₽</b>\n\n"
-        )
-    text = (
-        "👤 <b>Личный кабинет</b>\n\n"
-        "━━━━━━━━━━━━━━━━━━\n\n"
-        f"{_status_heading(state)}\n\n"
-        f"{financial_summary}"
-        "📅 Доступ до:\n"
-        f"<b>{expiration_text}</b>\n\n"
-        "⏳ Осталось:\n"
-        f"<b>{time_left}</b>\n\n"
-        "📦 Тариф:\n"
-        f"<b>{escape(display_tariff)}</b>\n\n"
-        "🌐 Трафик:\n"
-        f"<b>{format_traffic(subscription, sync_unavailable=sync_unavailable)}</b>\n\n"
-        "📱 Устройств:\n"
-        f"<b>до {subscription.device_limit}</b>\n\n"
-        "━━━━━━━━━━━━━━━━━━\n\n"
-        f"{helpful_message}"
-    )
+    heading = f"👤 <b>Моя подписка</b>\n\n{_status_heading(state)}"
+    if state == "pending":
+        return f"{heading}\n\nОбычно это занимает меньше минуты.", state
+    if state == "failed":
+        return (
+            f"{heading}\n\nНе удалось обновить настройки. Напишите в поддержку — "
+            "мы проверим доступ."
+        ), state
+    if state in {"expired", "disabled"}:
+        date_label = "Закончилась" if state == "expired" else "Была активна до"
+        return f"{heading}\n\n📅 {date_label}: <b>{expiration_text}</b>", state
+
+    lines = [
+        heading,
+        f"📦 Тариф: <b>{escape(display_tariff)}</b>",
+        f"📅 До <b>{expiration_text}</b> · осталось <b>{time_left}</b>",
+        (
+            "🌐 Трафик: "
+            f"<b>{format_traffic(subscription, sync_unavailable=sync_unavailable)}</b>"
+        ),
+        f"📱 Устройства: <b>до {subscription.device_limit}</b>",
+    ]
+    if sync_unavailable:
+        lines.append("⚠️ Показана последняя сохранённая информация.")
+    text = "\n\n".join(lines)
     return text, state
 
 
-def empty_account_text(user: User | None = None) -> str:
-    financial_summary = ""
-    if user is not None:
-        financial_summary = (
-            "💰 Баланс:\n"
-            f"<b>{_number(float(user.balance))} ₽</b>\n\n"
-            "👥 Приглашено друзей:\n"
-            f"<b>{user.total_referrals}</b>\n\n"
-            "🎁 Заработано:\n"
-            f"<b>{_number(float(user.total_referral_income))} ₽</b>\n\n"
-        )
-    return (
-        "👤 <b>Личный кабинет</b>\n\n"
-        f"{financial_summary}"
-        "У вас пока нет подписки.\n\n"
-        "Выберите тариф или попробуйте BlazeVPN бесплатно."
+def empty_account_text(*, trial_available: bool = False) -> str:
+    action = (
+        "Выберите тариф или попробуйте BlazeVPN бесплатно на 30 дней."
+        if trial_available
+        else "Выберите тариф, чтобы подключить BlazeVPN."
     )
+    return f"👤 <b>Моя подписка</b>\n\nПодписки пока нет.\n\n{action}"

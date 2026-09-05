@@ -187,17 +187,18 @@ async def show_subscription(
     if callback.message is None:
         return
     if subscription is None:
+        trial_available = bool(
+            user
+            and not user.trial_used
+            and not user.trial_disabled
+            and not user.is_blocked
+        )
         await edit_text_or_caption(
             callback.message,
-            empty_account_text(user),
+            empty_account_text(trial_available=trial_available),
             subscription_menu(
                 state="none",
-                trial_available=bool(
-                    user
-                    and not user.trial_used
-                    and not user.trial_disabled
-                    and not user.is_blocked
-                ),
+                trial_available=trial_available,
                 has_key=False,
                 back_callback=MAIN_MENU_CALLBACK,
             ),
@@ -207,9 +208,6 @@ async def show_subscription(
     text, state = account_text(
         subscription,
         tariff.name if tariff else None,
-        tariff_price=tariff.price if tariff else None,
-        tariff_currency=tariff.currency if tariff else "RUB",
-        user=user,
         sync_unavailable=(
             sync_unavailable or bool(subscription.remnawave_sync_error)
         ),
