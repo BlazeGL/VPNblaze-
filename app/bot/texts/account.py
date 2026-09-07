@@ -233,7 +233,7 @@ def account_text(
 
 def empty_account_text(*, trial_available: bool = False) -> str:
     action = (
-        "Выберите тариф или попробуйте BlazeVPN бесплатно на 15 дней."
+        "Выберите тариф или попробуйте BlazeVPN бесплатно на 50 дней."
         if trial_available
         else "Выберите тариф, чтобы подключить BlazeVPN."
     )

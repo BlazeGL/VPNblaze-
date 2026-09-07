@@ -28,7 +28,7 @@ class TrialActivationResult:
 
 
 class TrialService:
-    DAYS = 15
+    DAYS = 50
 
     def __init__(
         self,

@@ -319,8 +319,8 @@ def test_account_hides_tariff_row_for_unlinked_subscription() -> None:
 
 
 def test_empty_account_text_mentions_trial_only_when_available() -> None:
-    assert "15 дней" in empty_account_text(trial_available=True)
-    assert "15 дней" not in empty_account_text(trial_available=False)
+    assert "50 дней" in empty_account_text(trial_available=True)
+    assert "50 дней" not in empty_account_text(trial_available=False)
 
 
 def test_user_without_subscription_sees_purchase_without_repeated_trial() -> None:
