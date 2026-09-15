@@ -87,6 +87,12 @@ class SubscriptionService:
             )
             self.session.add(subscription)
         else:
+            if (
+                subscription.source_type == SubscriptionSource.promo
+                and subscription.expires_at > activation.started_at
+            ):
+                trial_duration = activation.expires_at - activation.started_at
+                activation.expires_at = subscription.expires_at + trial_duration
             subscription.source_type = SubscriptionSource.trial
             subscription.status = SubscriptionStatus.pending
             subscription.started_at = activation.started_at
@@ -154,23 +160,43 @@ class SubscriptionService:
         *,
         redemption_id: uuid.UUID,
         locked_subscription: Subscription | None = None,
+        create_if_missing: bool = False,
         now: datetime | None = None,
     ) -> Subscription:
         if bonus_days <= 0:
             raise ValueError("bonus_days_positive")
         moment = now or datetime.now(UTC)
         subscription = locked_subscription or await self.get_for_update(user.id)
+        created = subscription is None
         if subscription is None:
-            raise LookupError("subscription_required")
+            if not create_if_missing:
+                raise LookupError("subscription_required")
+            subscription = Subscription(
+                user_id=user.id,
+                source_type=SubscriptionSource.promo,
+                status=SubscriptionStatus.pending,
+                started_at=moment,
+                expires_at=moment + timedelta(days=bonus_days),
+                traffic_limit_gb=None,
+                is_unlimited_traffic=False,
+                device_limit=1,
+            )
+            self.session.add(subscription)
+            await self.session.flush()
 
         was_active = (
             subscription.status == SubscriptionStatus.active
             and subscription.expires_at > moment
         )
-        base = subscription.expires_at if subscription.expires_at > moment else moment
-        if subscription.expires_at <= moment:
-            subscription.started_at = moment
-        subscription.expires_at = base + timedelta(days=bonus_days)
+        if not created:
+            base = (
+                subscription.expires_at
+                if subscription.expires_at > moment
+                else moment
+            )
+            if subscription.expires_at <= moment:
+                subscription.started_at = moment
+            subscription.expires_at = base + timedelta(days=bonus_days)
         subscription.status = SubscriptionStatus.pending
         subscription.expiry_notice_3d_at = None
         subscription.expiry_notice_1d_at = None

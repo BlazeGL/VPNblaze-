@@ -3,6 +3,7 @@ from app.database.models.balance import (
     BalanceTransaction,
     BalanceTransactionType,
 )
+from app.database.models.channel_reward import ChannelReward
 from app.database.models.order import Order, OrderPurpose, OrderStatus
 from app.database.models.payment import Payment, PaymentStatus
 from app.database.models.promo import (
@@ -29,6 +30,7 @@ __all__ = [
     "AuditLog",
     "BalanceTransaction",
     "BalanceTransactionType",
+    "ChannelReward",
     "Order",
     "OrderPurpose",
     "OrderStatus",

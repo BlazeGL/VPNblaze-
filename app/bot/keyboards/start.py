@@ -17,7 +17,9 @@ REFUND_TERMS_CALLBACK = "legal_refund_terms"
 BONUSES_CALLBACK = "bonuses"
 COPY_REFERRAL_LINK_CALLBACK = "copy_referral_link"
 CHANNEL_CALLBACK = "official_channel"
+CLAIM_CHANNEL_REWARD_CALLBACK = "claim_channel_reward"
 CHANNEL_URL = "https://t.me/blazeVPNgroup"
+CHANNEL_BONUS_START_PARAMETER = "channel_bonus"
 
 
 def is_valid_agreement_url(url: str | None) -> bool:
@@ -114,8 +116,14 @@ def channel_menu() -> InlineKeyboardMarkup:
         inline_keyboard=[
             [
                 InlineKeyboardButton(
-                    text="BlazeVPN - News",
+                    text="📢 Подписаться на канал",
                     url=CHANNEL_URL,
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="🎁 Получить +7 дней",
+                    callback_data=CLAIM_CHANNEL_REWARD_CALLBACK,
                 )
             ],
             [

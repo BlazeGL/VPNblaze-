@@ -19,6 +19,7 @@ from app.bot.keyboards.start import (
     ACTIVATE_TRIAL_CALLBACK,
     BUY_SUBSCRIPTION_CALLBACK,
     CHANNEL_URL,
+    CLAIM_CHANNEL_REWARD_CALLBACK,
     HELP_CENTER_CALLBACK,
     MAIN_MENU_CALLBACK,
     MORE_CALLBACK,
@@ -116,11 +117,13 @@ def test_main_menu_state_prefers_trial_subscription_and_renewal() -> None:
 def test_channel_url_is_hidden_behind_the_requested_button() -> None:
     markup = channel_menu()
     channel_button = markup.inline_keyboard[0][0]
-    back_button = markup.inline_keyboard[1][0]
+    reward_button = markup.inline_keyboard[1][0]
+    back_button = markup.inline_keyboard[2][0]
 
-    assert channel_button.text == "BlazeVPN - News"
+    assert channel_button.text == "📢 Подписаться на канал"
     assert channel_button.url == CHANNEL_URL
     assert channel_button.callback_data is None
+    assert reward_button.callback_data == CLAIM_CHANNEL_REWARD_CALLBACK
     assert CHANNEL_URL not in CHANNEL_TEXT
     assert back_button.callback_data == MORE_CALLBACK
 
@@ -143,6 +146,7 @@ async def test_channel_callback_renders_message_without_visible_url(
     assert renderer.await_args.args[1] == CHANNEL_TEXT
     assert CHANNEL_URL not in renderer.await_args.args[1]
     assert renderer.await_args.args[2].inline_keyboard[0][0].url == CHANNEL_URL
+    assert renderer.await_args.kwargs["parse_mode"] == ParseMode.HTML
 
 
 def test_valid_agreement_url_creates_url_only_button() -> None:

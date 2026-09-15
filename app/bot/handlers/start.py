@@ -8,8 +8,13 @@ from aiogram.types import CallbackQuery, FSInputFile, Message
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from app.bot.handlers.channel_rewards import (
+    channel_claim_text,
+    claim_channel_reward_for_user,
+)
 from app.bot.keyboards.start import (
     BACK_TO_MAIN_CALLBACK,
+    CHANNEL_BONUS_START_PARAMETER,
     CHANNEL_CALLBACK,
     MAIN_MENU_CALLBACK,
     MORE_CALLBACK,
@@ -36,6 +41,7 @@ from app.bot.texts.start import (
     USER_AGREEMENT_TEXT,
 )
 from app.core.config import Settings
+from app.core.crypto import SubscriptionUrlCipher
 from app.database.models import (
     Subscription,
     SubscriptionSource,
@@ -43,6 +49,7 @@ from app.database.models import (
     User,
 )
 from app.database.repositories import UserRepository
+from app.integrations.remnawave.client import RemnawaveClient
 from app.services.referrals import REFERRAL_BONUS, ReferralService
 
 logger = logging.getLogger(__name__)
@@ -132,6 +139,11 @@ async def handle_start(
     session_factory: async_sessionmaker[AsyncSession],
     admin_ids: set[int],
     command: CommandObject,
+    remnawave_client: RemnawaveClient | None = None,
+    subscription_cipher: SubscriptionUrlCipher | None = None,
+    remnawave_internal_squad_uuid: str | None = None,
+    remnawave_russia_squad_uuid: str | None = None,
+    remnawave_template_user_uuid: str | None = None,
 ) -> None:
     telegram_user = message.from_user
     if telegram_user is None:
@@ -173,6 +185,23 @@ async def handle_start(
             )
         except Exception:
             logger.exception("Could not notify referrer %s", referral.referrer.id)
+    if command.args == CHANNEL_BONUS_START_PARAMETER:
+        outcome = await claim_channel_reward_for_user(
+            bot=message.bot,
+            telegram_id=telegram_user.id,
+            session_factory=session_factory,
+            remnawave_client=remnawave_client,
+            subscription_cipher=subscription_cipher,
+            remnawave_internal_squad_uuid=remnawave_internal_squad_uuid,
+            remnawave_russia_squad_uuid=remnawave_russia_squad_uuid,
+            remnawave_template_user_uuid=remnawave_template_user_uuid,
+        )
+        await message.answer(
+            channel_claim_text(outcome),
+            reply_markup=channel_menu(),
+            parse_mode=ParseMode.HTML,
+        )
+        return
     await send_welcome(message, primary_action=primary_action)
 
 
@@ -262,6 +291,7 @@ async def show_channel(callback: CallbackQuery) -> None:
             callback.message,
             CHANNEL_TEXT,
             channel_menu(),
+            parse_mode=ParseMode.HTML,
         )
 
 

@@ -110,11 +110,11 @@ class TrialService:
         )
         self.session.add(activation)
         await self.session.flush()
+        subscription = await self.subscription_service.register_trial(user, activation)
         user.trial_used = True
         user.trial_started_at = activation.started_at
         user.trial_expires_at = activation.expires_at
         user.trial_activation_id = activation.id
-        subscription = await self.subscription_service.register_trial(user, activation)
         add_audit_log(
             self.session,
             action="trial_activated",

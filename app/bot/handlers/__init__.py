@@ -3,6 +3,7 @@ from aiogram import Router
 from app.bot.handlers.admin import router as admin_router
 from app.bot.handlers.apps import router as apps_router
 from app.bot.handlers.bonuses import router as bonuses_router
+from app.bot.handlers.channel_rewards import router as channel_rewards_router
 from app.bot.handlers.promos import router as promos_router
 from app.bot.handlers.remnawave_admin import router as remnawave_admin_router
 from app.bot.handlers.start import router as start_router
@@ -21,6 +22,7 @@ from app.bot.handlers.user_commands import (
 def setup_routers() -> Router:
     router = Router(name="root")
     router.include_router(start_router)
+    router.include_router(channel_rewards_router)
     # Commands go first so they can intentionally replace a conflicting FSM
     # flow (notably /promo). The unknown-command fallback remains last.
     router.include_router(user_commands_router)
