@@ -109,7 +109,28 @@ async def admin_dashboard_text(
         active_subscriptions = (
             await session.scalar(
                 select(func.count(Subscription.id)).where(
-                    Subscription.status == SubscriptionStatus.active
+                    Subscription.status == SubscriptionStatus.active,
+                    Subscription.expires_at > func.now(),
+                )
+            )
+            or 0
+        )
+        paid_subscriptions = (
+            await session.scalar(
+                select(func.count(Subscription.id)).where(
+                    Subscription.source_type == SubscriptionSource.paid,
+                    Subscription.status == SubscriptionStatus.active,
+                    Subscription.expires_at > func.now(),
+                )
+            )
+            or 0
+        )
+        trial_subscriptions = (
+            await session.scalar(
+                select(func.count(Subscription.id)).where(
+                    Subscription.source_type == SubscriptionSource.trial,
+                    Subscription.status == SubscriptionStatus.active,
+                    Subscription.expires_at > func.now(),
                 )
             )
             or 0
@@ -143,6 +164,8 @@ async def admin_dashboard_text(
         "⚙️ Панель управления\n\n"
         f"👥 Пользователей: {users} · активных подписок: "
         f"{active_subscriptions}\n"
+        f"💳 Оплаченных: {paid_subscriptions} · 🧪 пробных: "
+        f"{trial_subscriptions}\n"
         f"💳 Ожидают оплаты: {awaiting_payment} · доход: "
         f"{Decimal(income):.2f} ₽\n"
         f"⚠️ Ошибок активации: {failed_activations}"
@@ -644,7 +667,18 @@ async def admin_actions(
             active_subscriptions = (
                 await session.scalar(
                     select(func.count(Subscription.id)).where(
-                        Subscription.status == SubscriptionStatus.active
+                        Subscription.status == SubscriptionStatus.active,
+                        Subscription.expires_at > func.now(),
+                    )
+                )
+                or 0
+            )
+            paid_subscriptions = (
+                await session.scalar(
+                    select(func.count(Subscription.id)).where(
+                        Subscription.source_type == SubscriptionSource.paid,
+                        Subscription.status == SubscriptionStatus.active,
+                        Subscription.expires_at > func.now(),
                     )
                 )
                 or 0
@@ -653,12 +687,7 @@ async def admin_actions(
                 await session.scalar(
                     select(func.count(Subscription.id)).where(
                         Subscription.source_type == SubscriptionSource.trial,
-                        Subscription.status.in_(
-                            [
-                                SubscriptionStatus.active,
-                                SubscriptionStatus.pending,
-                            ]
-                        ),
+                        Subscription.status == SubscriptionStatus.active,
                         Subscription.expires_at > func.now(),
                     )
                 )
@@ -669,6 +698,7 @@ async def admin_actions(
                 "👥 Пользователи\n\n"
                 f"Всего: {count}\n"
                 f"С активной подпиской: {active_subscriptions}\n"
+                f"Оплаченных: {paid_subscriptions}\n"
                 f"На пробном периоде: {trial_subscriptions}",
                 reply_markup=admin_users_menu(),
             )

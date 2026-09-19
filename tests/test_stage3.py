@@ -198,7 +198,7 @@ async def test_admin_has_edik_access() -> None:
     message = SimpleNamespace(answer=AsyncMock())
     state = SimpleNamespace(clear=AsyncMock())
     session = session_mock()
-    session.scalar.side_effect = [12, 7, 2, Decimal("1499.50"), 1]
+    session.scalar.side_effect = [12, 7, 5, 2, 2, Decimal("1499.50"), 1]
     context = MagicMock()
     context.__aenter__ = AsyncMock(return_value=session)
     context.__aexit__ = AsyncMock(return_value=False)
@@ -210,6 +210,8 @@ async def test_admin_has_edik_access() -> None:
     assert text.startswith("⚙️ Панель управления")
     assert "Пользователей: 12" in text
     assert "активных подписок: 7" in text
+    assert "Оплаченных: 5" in text
+    assert "пробных: 2" in text
     assert "доход: 1499.50 ₽" in text
     state.clear.assert_awaited_once()
 

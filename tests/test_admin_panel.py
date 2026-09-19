@@ -7,6 +7,7 @@ import pytest
 from app.bot.callbacks import AdminCallback
 from app.bot.handlers import admin
 from app.bot.handlers.admin import (
+    admin_dashboard_text,
     parse_tariff_button_text,
     parse_tariff_price,
     update_tariff_button_text,
@@ -125,6 +126,29 @@ def test_admin_menu_is_compact_and_has_no_placeholder_sections() -> None:
     assert "stats_v3" not in actions
     assert "sales" not in actions
     assert "settings" not in actions
+
+
+@pytest.mark.asyncio
+async def test_admin_dashboard_splits_paid_and_trial_subscriptions() -> None:
+    session = MagicMock()
+    session.scalar = AsyncMock(
+        side_effect=[
+            120,  # users
+            47,  # all active subscriptions
+            35,  # paid active subscriptions
+            9,  # trial active subscriptions
+            3,  # awaiting payment
+            Decimal("5432.10"),  # income
+            1,  # failed activations
+        ]
+    )
+    session_factory = MagicMock(return_value=async_context(session))
+
+    text = await admin_dashboard_text(session_factory)
+
+    assert "активных подписок: 47" in text
+    assert "💳 Оплаченных: 35 · 🧪 пробных: 9" in text
+    assert "Ожидают оплаты: 3" in text
 
 
 def test_sales_functions_remain_grouped_outside_the_main_menu() -> None:
