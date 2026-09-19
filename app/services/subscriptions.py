@@ -99,6 +99,10 @@ class SubscriptionService:
             subscription.expires_at = activation.expires_at
             subscription.tariff_id = None
             subscription.order_id = None
+        subscription.trial_connection_notice_at = None
+        subscription.expiry_notice_3d_at = None
+        subscription.expiry_notice_1d_at = None
+        subscription.expired_notice_at = None
         await self.session.flush()
         return await self._provision(subscription, user)
 

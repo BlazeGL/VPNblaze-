@@ -18,6 +18,7 @@ from app.database.models import (
     ProvisioningOperationStatus,
     ProvisioningStatus,
     Subscription,
+    SubscriptionSource,
     SubscriptionStatus,
     Tariff,
     User,
@@ -205,6 +206,7 @@ async def _send_expiry_notifications(
             await session.scalars(
                 select(Subscription.id)
                 .where(
+                    Subscription.source_type != SubscriptionSource.trial,
                     Subscription.status.in_(
                         [
                             SubscriptionStatus.active,

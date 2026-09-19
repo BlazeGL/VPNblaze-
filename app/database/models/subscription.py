@@ -136,6 +136,9 @@ class Subscription(Base):
     next_retry_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True, index=True
     )
+    trial_connection_notice_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, index=True
+    )
     expiry_notice_3d_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )

@@ -23,6 +23,7 @@ from app.integrations.remnawave.exceptions import RemnawaveError
 from app.integrations.yookassa.client import YooKassaClient
 from app.integrations.yookassa.exceptions import YooKassaError
 from app.workers.subscription_retry import retry_subscription_activations
+from app.workers.trial_reminders import run_trial_reminders
 
 logger = logging.getLogger(__name__)
 
@@ -146,6 +147,21 @@ async def main() -> None:
             template_user_uuid=settings.remnawave_template_user_uuid,
         )
     )
+    trial_reminder_worker: asyncio.Task[None] | None = None
+    if settings.trial_reminders_enabled:
+        trial_reminder_worker = asyncio.create_task(
+            run_trial_reminders(
+                session_factory=session_factory,
+                bot=bot,
+                stop_event=stop_retry_worker,
+                remnawave_client=remnawave_client,
+                initial_delay_seconds=(
+                    settings.trial_reminders_initial_delay_hours * 60 * 60
+                ),
+                interval_seconds=settings.trial_reminders_interval_minutes * 60,
+                batch_size=settings.trial_reminders_batch_size,
+            )
+        )
     logger.info("Starting VPN bot in long polling mode")
     try:
         await dispatcher.start_polling(
@@ -170,6 +186,8 @@ async def main() -> None:
         logger.info("Shutting down bot resources")
         stop_retry_worker.set()
         await retry_worker
+        if trial_reminder_worker is not None:
+            await trial_reminder_worker
         await bot.session.close()
         await storage.close()
         await redis_client.aclose()

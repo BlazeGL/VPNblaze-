@@ -115,6 +115,10 @@ def test_empty_technical_settings_use_safe_defaults() -> None:
         remnawave_verify_ssl="",
         remnawave_max_retries="",
         remnawave_retry_base_delay="",
+        trial_reminders_enabled="",
+        trial_reminders_initial_delay_hours="",
+        trial_reminders_interval_minutes="",
+        trial_reminders_batch_size="",
         _env_file=None,
     )
 
@@ -131,6 +135,10 @@ def test_empty_technical_settings_use_safe_defaults() -> None:
     assert settings.remnawave_verify_ssl is True
     assert settings.remnawave_max_retries == 3
     assert settings.remnawave_retry_base_delay == 1
+    assert settings.trial_reminders_enabled is True
+    assert settings.trial_reminders_initial_delay_hours == 6
+    assert settings.trial_reminders_interval_minutes == 15
+    assert settings.trial_reminders_batch_size == 5
 
 
 def test_critical_secrets_remain_required() -> None:
@@ -141,3 +149,12 @@ def test_critical_secrets_remain_required() -> None:
             remnawave_api_token="",
             _env_file=None,
         )
+
+
+def test_trial_reminders_have_gradual_safe_defaults() -> None:
+    settings = Settings(**REQUIRED_SETTINGS, _env_file=None)
+
+    assert settings.trial_reminders_enabled is True
+    assert settings.trial_reminders_initial_delay_hours == 6
+    assert settings.trial_reminders_interval_minutes == 15
+    assert settings.trial_reminders_batch_size == 5

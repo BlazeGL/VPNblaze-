@@ -31,6 +31,10 @@ EMPTY_VALUE_DEFAULTS: dict[str, object] = {
     "remnawave_verify_ssl": DEFAULT_REMNAWAVE_VERIFY_SSL,
     "remnawave_max_retries": DEFAULT_REMNAWAVE_MAX_RETRIES,
     "remnawave_retry_base_delay": DEFAULT_REMNAWAVE_RETRY_BASE_DELAY,
+    "trial_reminders_enabled": True,
+    "trial_reminders_initial_delay_hours": 6.0,
+    "trial_reminders_interval_minutes": 15,
+    "trial_reminders_batch_size": 5,
 }
 
 
@@ -93,6 +97,10 @@ class Settings(BaseSettings):
     user_agreement_url: str | None = None
     support_url: str = "https://t.me/Blaze_GL"
     support_group_id: int | None = None
+    trial_reminders_enabled: bool = True
+    trial_reminders_initial_delay_hours: float = Field(default=6.0, ge=0, le=168)
+    trial_reminders_interval_minutes: int = Field(default=15, ge=5, le=1440)
+    trial_reminders_batch_size: int = Field(default=5, ge=1, le=50)
 
     @field_validator("admin_ids", mode="before")
     @classmethod
