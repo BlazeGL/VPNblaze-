@@ -70,9 +70,20 @@ class UserResponse(RemnawaveModel):
     response: RemnawaveUser
 
 
+class HwidDevice(RemnawaveModel):
+    hwid: str = ""
+    user_uuid: UUID | None = Field(default=None, alias="userUuid")
+    platform: str | None = None
+    os_version: str | None = Field(default=None, alias="osVersion")
+    device_model: str | None = Field(default=None, alias="deviceModel")
+    user_agent: str | None = Field(default=None, alias="userAgent")
+    created_at: datetime | None = Field(default=None, alias="createdAt")
+    updated_at: datetime | None = Field(default=None, alias="updatedAt")
+
+
 class HwidDevicesData(RemnawaveModel):
     total: int = Field(ge=0)
-    devices: list[dict[str, object]] = Field(default_factory=list)
+    devices: list[HwidDevice] = Field(default_factory=list)
 
 
 class HwidDevicesResponse(RemnawaveModel):

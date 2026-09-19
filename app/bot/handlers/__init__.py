@@ -4,6 +4,7 @@ from app.bot.handlers.admin import router as admin_router
 from app.bot.handlers.apps import router as apps_router
 from app.bot.handlers.bonuses import router as bonuses_router
 from app.bot.handlers.channel_rewards import router as channel_rewards_router
+from app.bot.handlers.devices import router as devices_router
 from app.bot.handlers.promos import router as promos_router
 from app.bot.handlers.remnawave_admin import router as remnawave_admin_router
 from app.bot.handlers.start import router as start_router
@@ -30,6 +31,7 @@ def setup_routers() -> Router:
     router.include_router(remnawave_admin_router)
     router.include_router(admin_router)
     router.include_router(promos_router)
+    router.include_router(devices_router)
     router.include_router(apps_router)
     router.include_router(bonuses_router)
     router.include_router(trial_router)

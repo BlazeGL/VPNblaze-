@@ -1,3 +1,4 @@
+import json
 import logging
 import uuid
 from datetime import UTC, datetime, timedelta
@@ -164,6 +165,46 @@ async def test_client_gets_connected_device_count_from_hwid_endpoint() -> None:
 
     assert await client.get_user_hwid_devices_count(USER_UUID) == 3
     await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_client_lists_and_deletes_one_hwid_device() -> None:
+    requests: list[tuple[str, str, dict[str, object] | None]] = []
+    device = {
+        "hwid": "device-identifier",
+        "userUuid": str(USER_UUID),
+        "platform": "iOS",
+        "deviceModel": "iPhone 15",
+        "createdAt": NOW.isoformat(),
+        "updatedAt": NOW.isoformat(),
+    }
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content) if request.content else None
+        requests.append((request.method, request.url.path, body))
+        if request.method == "GET":
+            return httpx.Response(
+                200, json={"response": {"total": 1, "devices": [device]}}
+            )
+        return httpx.Response(200, json={"response": {"total": 0, "devices": []}})
+
+    client = RemnawaveClient(
+        "https://panel.example", "x", transport=httpx.MockTransport(handler)
+    )
+    devices = await client.get_user_hwid_devices(USER_UUID)
+    updated = await client.delete_user_hwid_device(USER_UUID, "device-identifier")
+    await client.aclose()
+
+    assert devices.devices[0].device_model == "iPhone 15"
+    assert updated.total == 0
+    assert requests == [
+        ("GET", f"/api/hwid/devices/{USER_UUID}", None),
+        (
+            "POST",
+            "/api/hwid/devices/delete",
+            {"userUuid": str(USER_UUID), "hwid": "device-identifier"},
+        ),
+    ]
 
 
 @pytest.mark.asyncio

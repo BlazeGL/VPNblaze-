@@ -355,9 +355,10 @@ def test_activation_and_account_menus_avoid_repeated_actions() -> None:
     assert [button.text for button in account_buttons] == [  # type: ignore[attr-defined]
         "🔑 Мой ключ",
         "💳 Продлить",
+        "📱 Устройства",
         "⬅️ Назад",
     ]
-    assert len(subscription_menu().inline_keyboard) == 2
+    assert len(subscription_menu().inline_keyboard) == 3
 
 
 def test_expired_subscription_only_sees_renewal() -> None:

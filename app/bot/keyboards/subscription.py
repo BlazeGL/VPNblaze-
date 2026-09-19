@@ -226,6 +226,14 @@ def subscription_menu(
             )
         )
         rows.append(actions)
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    text="📱 Устройства",
+                    callback_data="manage_devices",
+                )
+            ]
+        )
     rows.append(
         [
             InlineKeyboardButton(
